@@ -1,6 +1,6 @@
 {
   "name": "demo-app",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "示例「老项目」：SPA 模式验证页面，CE 模式把容器 + 页面编译成一批可动态加载的 WC",

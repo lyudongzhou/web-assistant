@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/protocol",
-  "version": "0.2.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "跨包契约：wc.pages.json / manifest v2 / WebSocket / 页面观察 / page-event（纯类型 + 命名工具，零依赖）",
   "main": "./dist/index.js",

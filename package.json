@@ -1,6 +1,6 @@
 {
   "name": "webassistant",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "description": "对话式 Web 助手：把路由页面编译为 Web Component，供 Agent 按需推送渲染",
   "scripts": {
