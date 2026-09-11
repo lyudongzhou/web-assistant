@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // CLI 入口：analyzer --config <wc.pages.json> [--out <manifest.json>] [--tsconfig <tsconfig.json>] [--ai-cache <file>] [--no-ai]
 import fs from 'node:fs'
 import path from 'node:path'
