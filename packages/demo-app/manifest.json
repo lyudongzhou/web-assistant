@@ -18,7 +18,7 @@
       "props": [
         {
           "name": "sources",
-          "type": "{ id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }",
+          "type": "{ id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }[]",
           "description": "外部可注入数据源列表；不传则用内置 mock"
         },
         {
@@ -57,7 +57,7 @@
       "exposes": [
         {
           "name": "save",
-          "signature": "(data: { name: string; host: string; port?: number; status?: \"active\" | \"disabled\"; options?: Record<string, string>; owner?: { id: number; displayName: string } }) => Promise<DatasourceVO>",
+          "signature": "(data: { name: string; host: string; port?: number; status?: \"active\" | \"disabled\"; options?: Record<string, string>; owner?: { id: number; displayName: string } }) => Promise<{ id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }>",
           "description": "保存数据源，返回保存后的完整对象（agent 可据返回值继续规划）"
         },
         {
@@ -67,25 +67,26 @@
         },
         {
           "name": "onSubmit",
-          "signature": "() => void",
-          "description": "触发提交新建数据源的表单逻辑。"
+          "signature": "() => void"
         }
       ],
-      "description": "数据源管理页，用于查看、筛选、新建和保存数据源，并支持选中与关闭操作。",
-      "keywords": [
-        "数据源管理",
-        "数据源列表",
-        "新建数据源",
-        "保存数据源",
-        "刷新数据源",
-        "启用状态筛选"
-      ],
-      "exampleQueries": [
-        "帮我打开数据源管理页面",
-        "我想新建一个 MySQL 数据源",
-        "只显示启用中的数据源",
-        "刷新一下数据源列表"
-      ]
+      "description": "数据源管理页，用类型写法声明 props/emits，支持保存、刷新与提交新建数据源",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "graph-demo",
+      "name": "GraphDemo",
+      "path": "/graph",
+      "title": "3D 图谱",
+      "framework": "vue",
+      "bundle": "pages/graphDemo.js",
+      "params": [],
+      "props": [],
+      "events": [],
+      "description": "3D 力导向图验收页：真实依赖 3d-force-graph + three-render-objects 的运行时 style 注入",
+      "keywords": [],
+      "exampleQueries": []
     }
   ]
 }

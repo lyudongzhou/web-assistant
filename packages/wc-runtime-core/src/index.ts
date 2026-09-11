@@ -56,3 +56,21 @@ export {
   resetLightDomStyles,
   rewriteRootToHost,
 } from './dom.js'
+export {
+  addStyleTarget,
+  bindProxy,
+  currentStyleTargets,
+  installStyleSink,
+  removeStyleTarget,
+  resetStyleSink,
+  shadowDocument,
+  beginStyleScope,
+  endStyleScope,
+  activateStyleScope,
+  clearStyleScopes,
+  STYLE_SINK_API_GLOBAL,
+  STYLE_SINK_API_KEY,
+  STYLE_SINK_GLOBAL,
+  DEFAULT_STYLE_SCOPE,
+  type StyleSinkApi,
+} from './styleSink.js'

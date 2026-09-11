@@ -7,6 +7,7 @@ import { defineCustomElement, h, shallowReactive, type App, type VNode } from 'v
 import type { Router } from 'vue-router'
 import {
   activityBus,
+  addStyleTarget,
   adoptSheets,
   applyThemeVars,
   createSharedSheet,
@@ -14,6 +15,7 @@ import {
   injectLightDomStyles,
   injectLightDomStylesBulk,
   markActivityTraced,
+  removeStyleTarget,
   rewriteRootToHost,
   type DefineContainerOptions,
   type PageModule,
@@ -181,6 +183,8 @@ export function defineVueContainer(
   let context: RuntimeServicesContext | undefined
   let reportPageEvent: DefineContainerOptions['onPageEvent']
   let setupDone = false
+  /** 本实例挂载过的 shadow root（dispose 时统一注销样式落点） */
+  const styleTargets: ShadowRoot[] = []
 
   const shadowCss = (options.shadowStyles ?? []).map(rewriteRootToHost)
   const sharedSheets = shadowCss
@@ -298,6 +302,12 @@ export function defineVueContainer(
       root.appendChild(handle.element)
       const shadow = handle.element.shadowRoot
       if (shadow && sharedSheets.length) adoptSheets(shadow, sharedSheets)
+      // 登记为「样式收件人」：被 styleShim 遮蔽的依赖往 document 注入的 <style>
+      // 会镜像一份到容器的 shadow root 里（详见 wc-runtime-core/styleSink.ts）
+      if (shadow) {
+        styleTargets.push(shadow)
+        addStyleTarget(shadow)
+      }
     },
 
     patchContainer(handle: VueContainerHandle, view: RuntimeView) {
@@ -360,6 +370,12 @@ export function defineVueContainer(
     },
 
     unmountContainer(handle) {
+      const shadow = handle.element.shadowRoot
+      if (shadow) {
+        const index = styleTargets.indexOf(shadow)
+        if (index >= 0) styleTargets.splice(index, 1)
+        removeStyleTarget(shadow)
+      }
       handle.element.remove()
     },
 
@@ -390,6 +406,7 @@ export function defineVueContainer(
     },
 
     dispose() {
+      for (const target of styleTargets.splice(0)) removeStyleTarget(target)
       context = undefined
     },
   }

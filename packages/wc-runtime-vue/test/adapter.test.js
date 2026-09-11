@@ -27,7 +27,7 @@ const defined = new Map()
 // 注意顺序：vue-router 在模块初始化时用 `typeof document !== 'undefined'` 判定 isBrowser，
 // 一旦提前塞了 document 桩，它会以为在浏览器里去摸 window/history。
 // 所以先 import 依赖 vue-router 的模块（走 memory/SSR 分支），之后再装 DOM 桩给容器用。
-const { normalizeManifest, createServicesRef, activityBus, withActivityOrigin, isActivityTraced } =
+const { normalizeManifest, createServicesRef, activityBus, withActivityOrigin, isActivityTraced, currentStyleTargets, resetStyleSink } =
   await import('@webassistant/wc-runtime-core')
 const { createVueRouter, createVueRouterBridge, toRouteRecords } = await import(
   '../dist/vueRouterBridge.js'
@@ -376,5 +376,29 @@ test('vue context：t 兜底、request/emit 透传、state 浅响应同步', () 
 
   servicesRef.setState({ user: { id: 2 } })
   assert.deepEqual(state.user, { id: 2 }, 'setState 同步进容器的响应式副本')
+})
+
+test('vue adapter：样式落点随 mount / unmount / dispose 正确登记与注销', async () => {
+  resetStyleSink()
+  const adapter = defineVueContainer()
+  const servicesRef = createServicesRef({})
+  const nav = { current: () => null, canGoBack: false, canGoForward: false }
+  const define = { tagName: 'runtime-vue-sink', servicesRef, navigation: nav, onPageEvent() {} }
+  const handle = adapter.defineContainer(define)
+
+  assert.deepEqual(currentStyleTargets(), [], '未挂载时不登记')
+
+  const shadow = { appendChild() {} }
+  handle.element.shadowRoot = shadow
+  adapter.mountContainer(handle, fakeElement('div'))
+  assert.deepEqual(currentStyleTargets(), [shadow], 'mount 把容器的 shadow root 登记为样式收件人')
+
+  adapter.unmountContainer(handle)
+  assert.deepEqual(currentStyleTargets(), [], 'unmount 注销')
+
+  adapter.mountContainer(handle, fakeElement('div'))
+  assert.equal(currentStyleTargets().length, 1, '再次挂载重新登记')
+  adapter.dispose()
+  assert.deepEqual(currentStyleTargets(), [], 'dispose 统一注销')
 })
 

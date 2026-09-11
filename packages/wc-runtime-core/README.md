@@ -204,6 +204,36 @@ idle ──navigate──▶ loading（页面 bundle 未加载时的中间帧）
 `injectLightDomStyles` / `injectLightDomStylesBulk`（UI 库浮层 teleport 到 body 的**已知隔离泄漏点**补丁，
 前者注入单段、后者按内容哈希去重批量注入页面样式）、`applyThemeVars`。
 
+### 7.1 反向：document → shadow root（`styleSink.ts`）
+
+上面那几个函数解决的是 **shadow → 光 DOM**（浮层用）。反方向（依赖往 `document.head` 注入样式、
+但 WC 在 shadow DOM 里看不到）由 `styleSink.ts` 兜：
+
+- **目标注册表**：`addStyleTarget(shadowRoot)` / `removeStyleTarget` / `currentStyleTargets`。
+  状态挂在 `globalThis` + `Symbol.for('webassistant.styleSink')` 上 —— 容器 bundle / 共享 chunk /
+  页面 bundle 是多份模块副本，模块级变量会各持一份（同 `activity.ts`），挂全局才是唯一真相源。
+  容器在 `mountContainer` 登记自己的 shadow root、`unmountContainer` / `dispose` 注销。
+- **`shadowDocument(realDoc)`**：给「指定包」做词法遮蔽用的 document 代理 ——
+  `vite-plugin-wc` 的 `styleShim` 会把指定包模块前置成
+  `var document = …shadowDocument(globalThis.document)`，包内裸 `document` 的样式插入即被**改道**：
+  命中的 `<style>` / `<link rel=stylesheet>` 由代理**直接把库自己的真节点移进**注册表里的 shadow root
+  （不再往 head 放、也不再克隆）。样式因此归容器所有 —— 容器卸载即随元素销毁；
+  库后续的 `sheet.insertRule/deleteRule`、`appendChild(textNode)`、`textContent = css`
+  都**直接作用于该节点自身**（真节点进了已连接的 shadow root → `sheet` 存在），无需任何同步挂钩。
+- **页级 scope（摘下 / 挂回）**：`beginStyleScope(tag)` 标记「页面加载窗口」，其内注入的样式归属该页；
+  `activateStyleScope(tag)` 在 `render()` 时把**非当前页**的节点从容器摘下（保留在内存组里）、
+  把当前页的挂回；`endStyleScope()` 收尾；`clearStyleScopes()` 在 `runtime.dispose` 时清空。
+  原因：ESM 模块只求值一次，切页不能真销毁、只能摘挂。未 `beginStyleScope` 的注入（容器级）
+  归兜底 scope `DEFAULT_STYLE_SCOPE`，恒定挂着、不参与摘挂。
+- **`bindProxy`**：忠实透传的代理工厂。原生 DOM 方法有品牌校验，直接 `new Proxy(document, {})`
+  会在 `document.createElement(...)` 抛 `Illegal invocation`，因此取属性必须
+  `Reflect.get(target, key, target)`、函数必须 `bind` 到真对象并缓存。
+- **`installStyleSink()`**：把 API 挂到 `globalThis[Symbol.for('webassistant.styleSink.api')]`，
+  由构建期注入的 prelude 调用。
+
+已知缺口：`window.document` / `globalThis.document` 等全局属性路径不覆盖（本方案不遮蔽 `window`）；
+改道固定投到 `targets[0]`（单容器假设，多容器 / 多 runtime 后续用 iframe 或 target 作用域解决）。
+
 ## 8. 生命周期与已知限制
 
 - **自定义元素不可撤销**：`customElements.define` 全局且不可注销。因此 `dispose()` 的语义是

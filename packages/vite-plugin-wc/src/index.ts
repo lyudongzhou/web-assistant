@@ -9,7 +9,9 @@
 // 硬约束：容器与页面必须同一次构建 —— 只有这样它们才共享同一份框架实例，
 // 页面 WC 才能继承容器 provide 的 services（详见 wc-runtime-core/README 第 1 节）。
 import path from "node:path";
+import { createRequire } from "node:module";
 import vue from "@vitejs/plugin-vue";
+import { STYLE_SINK_API_KEY } from "@webassistant/wc-runtime-core/styleSink";
 import {
   CONTAINER_ENTRY_KEY,
   containerBundlePath,
@@ -68,6 +70,27 @@ export interface WcPluginOptions {
    * 一旦被 external:[] 强制「全打包」就会崩（node:module 等无对应浏览器导出）。
    */
   external?: (string | RegExp)[];
+  /**
+   * 样式落点桥：让「指定包」里往 document 注入的样式镜像进容器 shadow root。
+   *
+   * 原理：给匹配到的包模块前置
+   *   `import "virtual:webassistant/style-sink"`（副作用 prelude，装上 shadowDocument 工厂）
+   *   `var document = globalThis[Symbol.for("webassistant.styleSink.api")].shadowDocument(globalThis.document)`
+   * Rollup 会把该本地绑定改名成 `document$N`，因此遮蔽范围**只收敛在被指定的包内**，
+   * 同 chunk 的 vue / 运行时代码不受影响。
+   *
+   * 已知缺口（有意不覆盖）：window.document / globalThis.document 等全局属性路径、
+   * 未列入 packages 的子依赖、`const doc = document` 逃逸出被遮蔽模块。
+   */
+  styleShim?: WcStyleShimOptions;
+}
+
+export interface WcStyleShimOptions {
+  /**
+   * 需要遮蔽 document 的包。字符串按 `/node_modules/<name>/` 片段匹配；
+   * 正则直接测模块 id（可用于本地 mock 依赖，如 /src[\\/]vendor[\\/]fakeCssInJs/）。
+   */
+  packages?: (string | RegExp)[];
 }
 
 // —— 忽略 <style module>（CSS Module）——
@@ -117,6 +140,97 @@ export function wcVuePlugin(_options: WcPluginOptions = {}): Plugin[] {
   }
 
   return [stripStyleModule, vue({ customElement: filter }) as Plugin]
+}
+
+// —— 样式落点桥（styleShim）——
+// 必须用 transform（模块级）注入，**不能用 output.banner**：banner 在渲染完成之后追加、
+// 不经过 Rollup 作用域分析，`var document` 会变成 chunk 级绑定、污染整个 chunk，
+// 「只影响被指定包」的精确隔离就没了。
+const SHIM_PRELUDE_ID = "virtual:webassistant/style-sink";
+const RESOLVED_PRELUDE_ID = "\0" + SHIM_PRELUDE_ID;
+/** 只对 JS/TS 模块注入（包里的 JSON / CSS 等一律不碰） */
+const SHIM_MODULE_RE = /\.(mjs|cjs|js|jsx|ts|tsx)$/;
+/** 匹配到的模块数超过这个数就告警一次（多半是 packages 模式写太宽） */
+const SHIM_BROAD_MATCH_WARN = 200;
+
+/**
+ * 判断模块 id 是否「可注入」。要点：
+ * - 裸 `.vue` 会被 @vitejs/plugin-vue 整体替换，注入无效 → 只接受它的**脚本子模块**
+ *   （`Foo.vue?vue&type=script&setup=true&lang.ts`）
+ * - SFC 的 style / template / custom 子模块导出的是字符串，一律不碰
+ * - 其余只认 js/ts 系扩展名
+ */
+function isShimmableId(normalized: string): boolean {
+  const queryIndex = normalized.indexOf("?");
+  const filePath = queryIndex === -1 ? normalized : normalized.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : normalized.slice(queryIndex);
+  if (/\.vue$/i.test(filePath)) return /[?&]type=script(?:&|$)/.test(query);
+  if (/[?&]type=(style|template|custom)(?:&|$)/.test(query)) return false;
+  return SHIM_MODULE_RE.test(filePath);
+}
+
+/**
+ * 包匹配：字符串按 `/node_modules/<name>/` 片段，正则直接测**去掉 query 的模块路径**。
+ *
+ * ⚠️ 正则务必锚定到具体路径。例：`/src[\\/]/` 会误伤一大批包 ——
+ * element-plus 等把源码放在 `es/components/<name>/src/*.mjs`，一个宽泛的 `src/` 就能命中几百个模块。
+ */
+function createShimMatcher(packages: readonly (string | RegExp)[]): (id: string) => boolean {
+  const fragments: string[] = [];
+  const regexes: RegExp[] = [];
+  for (const entry of packages) {
+    if (entry instanceof RegExp) regexes.push(entry);
+    else fragments.push(`/node_modules/${entry.replace(/^\/+|\/+$/g, "")}/`);
+  }
+  return (id) => {
+    if (!id || id.startsWith("\0")) return false;
+    const normalized = id.replace(/\\/g, "/");
+    const queryIndex = normalized.indexOf("?");
+    const filePath = queryIndex === -1 ? normalized : normalized.slice(0, queryIndex);
+    if (!isShimmableId(normalized)) return false;
+    for (const fragment of fragments) if (filePath.includes(fragment)) return true;
+    for (const regex of regexes) if (regex.test(filePath)) return true;
+    return false;
+  };
+}
+
+/** 定位 wc-runtime-core 的 styleSink 入口（供 prelude 引用）；解析不到就退回裸说明符 */
+function resolveStyleSinkEntry(): string {
+  try {
+    return createRequire(import.meta.url).resolve("@webassistant/wc-runtime-core/styleSink");
+  } catch {
+    return "@webassistant/wc-runtime-core/styleSink";
+  }
+}
+
+function createStyleShimPlugin(shim?: WcStyleShimOptions): Plugin | null {
+  const packages = shim?.packages ?? [];
+  if (!packages.length) return null;
+  const matches = createShimMatcher(packages);
+  const key = JSON.stringify(STYLE_SINK_API_KEY);
+  // prelude import 必须在最前：它装上 shadowDocument 工厂，保证先于本模块求值。
+  // 防御式写法：工厂缺席时退化成真 document（不崩、只是不镜像）。
+  const banner =
+    `import ${JSON.stringify(SHIM_PRELUDE_ID)};\n` +
+    `var document = ((globalThis[Symbol.for(${key})] || {}).shadowDocument || function (d) { return d })(globalThis.document);\n`;
+  let matched = 0;
+  let warnedBroad = false;
+  return {
+    name: "webassistant:style-shim",
+    enforce: "pre",
+    transform(code, id) {
+      if (!matches(id)) return null;
+      matched += 1;
+      if (!warnedBroad && matched > SHIM_BROAD_MATCH_WARN) {
+        warnedBroad = true;
+        this.warn(
+          `[webassistant:wc] styleShim 已匹配 ${matched}+ 个模块，可能把 packages 写得太宽了` +
+            `（例：/src[\\/]/ 会命中 element-plus 的 es/components/*/src/*.mjs）。建议锚定到具体包/目录。`,
+        );
+      }
+      return { code: banner + code, map: null };
+    },
+  };
 }
 
 /**
@@ -290,7 +404,22 @@ export function wcBuildPlugin(options: WcPluginOptions = {}): Plugin[] {
     },
   };
 
-  return [buildPlugin, styleCollectPlugin];
+  // prelude：副作用安装 shadowDocument 工厂（由 shimPlugin 前置 import）
+  const preludePlugin: Plugin = {
+    name: "webassistant:style-sink-prelude",
+    resolveId(id) {
+      return id === SHIM_PRELUDE_ID ? RESOLVED_PRELUDE_ID : null;
+    },
+    load(id) {
+      if (id !== RESOLVED_PRELUDE_ID) return null;
+      return `import { installStyleSink } from ${JSON.stringify(resolveStyleSinkEntry())};\ninstallStyleSink();\n`;
+    },
+  };
+  const shimPlugin = createStyleShimPlugin(options.styleShim);
+
+  return shimPlugin
+    ? [buildPlugin, shimPlugin, preludePlugin, styleCollectPlugin]
+    : [buildPlugin, styleCollectPlugin];
 }
 
 export type { WcPagesConfig, WcPageEntry } from "@webassistant/protocol";

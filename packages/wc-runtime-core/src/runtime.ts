@@ -9,6 +9,7 @@ import { createNetworkObserver, type NetworkObserver } from './observer.js'
 import { resolveProps } from './props.js'
 import { createServicesRef } from './services.js'
 import { createStyleRegistry } from './styles.js'
+import { activateStyleScope, beginStyleScope, clearStyleScopes, endStyleScope } from './styleSink.js'
 import { apiBus } from './apiBus.js'
 import { matchDataSource, summarizeData } from './dataSources.js'
 import type {
@@ -136,6 +137,8 @@ export function createRuntime(options: CreateRuntimeOptions): Runtime {
       containers.patch(view.framework, view)
       containers.deactivateOthers(view.framework, styles.version)
     }
+    // 只让当前页的改道样式挂在容器里（其余页的摘下缓存，切回再挂）
+    activateStyleScope(view.tag)
     bus.emit('view', view)
     return view
   }
@@ -187,7 +190,14 @@ export function createRuntime(options: CreateRuntimeOptions): Runtime {
   async function ensurePage(route: RuntimeRoute): Promise<void> {
     if (registeredPages.has(route.tag)) return
     const entry = await containers!.ensure(route.framework)
-    const mod = await loader.load<PageModule>(route.bundle)
+    // 页面 bundle 首次 import 会执行库的样式注入 —— 这窗口内的改道样式归属本页 scope。
+    beginStyleScope(route.tag)
+    let mod: PageModule
+    try {
+      mod = await loader.load<PageModule>(route.bundle)
+    } finally {
+      endStyleScope()
+    }
     const api: PageApi = {
       tag: route.tag,
       route,
@@ -448,6 +458,7 @@ export function createRuntime(options: CreateRuntimeOptions): Runtime {
       nav.dispose()
       observer.dispose()
       styles.dispose()
+      clearStyleScopes()
       servicesRef.dispose()
       bus.clear()
       registeredPages.clear()

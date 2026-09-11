@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@webassistant/analyzer": "workspace:^",
-    "@webassistant/protocol": "workspace:^"
+    "@webassistant/protocol": "workspace:^",
+    "@webassistant/wc-runtime-core": "workspace:^"
   },
   "peerDependencies": {
     "vite": "^6.0.0 || ^7.0.0",

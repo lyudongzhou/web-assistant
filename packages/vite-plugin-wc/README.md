@@ -115,6 +115,8 @@ wcBuildPlugin({
   entryDir: 'node_modules/.wc-entry',
   outDir: 'dist-ce',
   aliases: { '#/*': './src/*' },
+  // 样式落点桥：把指定包往 document 注入的样式镜像进容器 shadow root（见 6.2）
+  styleShim: { packages: ['element-plus', '@vueuse/core'] },
 })
 wcVuePlugin() // 固定编译项目内所有 .vue，无需 options
 
@@ -142,8 +144,96 @@ wcManifestPlugin({
 - **删除**（wc.pages.json 移除某页）→ manifest 同步移除该页。
 - dev 模式下监听 `wc.pages.json` 与页面组件源码变化，热更新 manifest（agent-server 会按 mtime 热重载）。
 
+## 6.2 styleShim：指定包的「样式落点桥」
+
+CSS-in-JS / UI 依赖会在运行时执行 `document.head.appendChild(<style>)`。业务 WC 渲染在容器
+shadow root 内，而 document 树里的样式表**匹配不到** shadow 树里的节点（Shadow DOM 封装）
+→ 样式在 WC 里不生效。`styleShim` 把「指定包」注入的样式镜像一份进容器的 shadow root。
+
+```ts
+wcBuildPlugin({
+  styleShim: {
+    // 字符串：按包名匹配（内部拼成 `/node_modules/<name>/`）
+    // 正则：直接测「去掉 query 的模块路径」——可用来锚定本项目源码目录
+    packages: ['element-plus', '@vueuse/core', /packages[\\/]my-app[\\/]src[\\/]/],
+  },
+})
+```
+
+**匹配规则与两个坑**：
+
+- **字符串**按 `/node_modules/<name>/` 片段匹配 → 适合第三方包；**正则**可直接锚定本项目目录。
+- ⚠️ **正则务必锚定**。反例：`/src[\\/]/` 看似无害，实测会命中 **element-plus 的
+  `es/components/<name>/src/*.mjs`（736 个模块）** —— 容器 bundle 从 1.94MB 涨到 2.04MB，
+  还会把无关样式改道。匹配数超过 200 时插件会告警提醒。
+- **`.vue` 也能覆盖**：注入点在它的 `?vue&type=script&setup=true&lang.ts` 子模块
+  （裸 `.vue` 会被 plugin-vue 整体替换，注入无效、已排除；`type=style`/`type=template` 子模块也不碰）。
+- **「页面文件」vs「依赖包」**：只要**真正执行 `document.head.appendChild` 的那段代码**落在被匹配的模块里就生效。
+  页面只是「调用依赖的注入函数」→ 生效（代码在依赖里）；页面**自己直写** `document` →
+  需要把页面路径也纳入 `packages`。
+- **CSS-in-JS 往往是「家族」，要逐个列**。实证：`3d-force-graph` 的样式由 **三个包**各自注入 ——
+  `3d-force-graph`（`.graph-info-msg`）、`three-render-objects`（`.scene-nav-info`）、
+  `float-tooltip`（`.float-tooltip-kap`，是 `three-render-objects` 的依赖）；
+  而同族的 `three-forcegraph` / `accessor-fn` / `kapsule` 实测不注入。
+  **自查方法**：对目标子树里每个包的 dist 主文件 `grep -c 'styleInject('`，命中就加进 `packages`；
+  构建后还可以核对产物里 `document.head || document.getElementsByTagName("head")` 的**未改写残留数是否为 0**。
+- **「先挂空 `<style>`、再填内容」也支持**（`style-inject` / rollup-plugin-postcss 的 `styleInject`，
+  即上面那三个包的写法）：拦截到空 style 后会挂钩该节点的 `appendChild` / `append` / `textContent`，
+  内容填上时同步进镜像。
+
+**原理**：给匹配到的包模块前置两行
+
+```js
+import "virtual:webassistant/style-sink";                       // 副作用 prelude：装上 shadowDocument 工厂
+var document = globalThis[Symbol.for("webassistant.styleSink.api")].shadowDocument(globalThis.document);
+```
+
+被遮蔽模块里的**裸 `document`** 都走这个代理；代理只改 `head`/`body` 上的
+`appendChild / insertBefore / append / prepend`，命中的 `<style>` / `<link rel=stylesheet>`
+被**改道**：直接把库自己的**真节点移进**容器的 shadow root（不再往 head 放、也不再克隆）。
+节点进了已连接的 shadow root 后自身 `sheet` 即生效，所以 emotion 的 `sheet.insertRule(...)`、
+style-inject 的 `appendChild(textNode)` 都直接作用在它自己身上，**无需任何同步**。
+容器卸载 = 节点随元素销毁；切页时按「页级 scope」把非当前页的节点摘下 / 挂回
+（见 `wc-runtime-core/README` 7.1）。
+
+**为什么范围精确到包**：注入用**模块级 transform**，所以 Rollup 会把该本地绑定改名成
+`document$N`，遮蔽只收敛在被指定包内，同 chunk 的 vue / 运行时代码不受影响。
+
+> ⚠️ 不能用 `output.banner` 实现：banner 在渲染完成之后追加、不经过 Rollup 作用域分析，
+> `var document` 会变成 chunk 级绑定、污染整个 chunk。
+
+**运行时接线**（已内置）：容器 `mountContainer` 时把自己的 shadow root 登记为样式收件人，
+`unmountContainer` / `dispose` 时注销；没有登记任何容器时补丁**不生效**（等价于没这功能）。
+
+**已知缺口（有意不覆盖）**：
+
+- 走全局属性路径的写法：`window.document` / `globalThis.document` / `self.document`（本方案不遮蔽 `window`）
+- 注入发生在**未列入 `packages` 的子依赖**里（例如真正注入的是 element-plus 依赖的某个小包）
+- `const doc = document` 且该引用逃出被遮蔽模块
+- `insertAdjacentHTML` 注入
+- 多容器：改道固定投到**第一个**登记中的容器 shadow root（单容器假设；多容器 / 多 runtime 后续用 iframe 或 target 作用域解决）
+
+**验收探针**：`demo-app` 的 `src/vendor/fakeCssInJs.ts` 同时模拟 P1（`appendChild` + `textContent`）
+与 P2（空 `<style>` + `insertRule`）两条路径，`DatasourceAdmin.vue` 挂载时各注入一条；
+构建后可在 DevTools 里看到容器 `shadowRoot` 下出现带 `data-wa-shadow` 的镜像 `<style>`。
+
+**验收探针 2（真实依赖）**：`demo-app` 的 `src/pages/GraphDemo.vue` 挂载 `3d-force-graph`，
+样式由 `3d-force-graph` + `three-render-objects` + `float-tooltip` 三家在**模块求值期**注入；
+`styleShim.packages` 里对应加了这三个包。验收指标：
+这三个库的 `<style>` **真节点**出现在容器 `shadowRoot` 里（带 `data-wa-shadow` = 归属 scope），
+`document.head` 里**不再有**对应副本；
+且 shadow 内 `.scene-nav-info` 的计算样式为 `font-size:10px / color:slategrey / position:absolute`（证明确实生效）。
+
+`demo-app` 的同页还有第三条探针：**页面文件自身**直写 `document.head.appendChild(...)`。
+当前 demo 的 `packages` 锚定到 `packages/demo-app/src/`，所以它**也会**被遮蔽并镜像进 shadow root；
+把模式收窄成只匹配 `src/vendor/` 后，这条就退回「只进 `document.head`、不进 shadow root」——
+产物里能直接看到差异：页面自身是 `document.head.appendChild(...)`（真全局），
+被匹配的模块是 `b.head.appendChild(...)`（被遮蔽的绑定）。
+
 ## 7. 已知限制
 
+- `styleShim`（把指定包注入的样式镜像进 shadow root）有已知缺口，见 6.2：不覆盖 `window.document`
+  等全局属性路径、未列入 `packages` 的子依赖、逃逸出被遮蔽模块的 `document` 引用
 - 公共依赖全量打进本批次（`external: []`），容器 bundle 较大（demo 约 1.8MB，含 element-plus JS+CSS）；
   好处是零宿主协作、零 import map，且批次内单实例
 - `container` 必须是文件路径（Vite library 模式不支持包名作 entry）

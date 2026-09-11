@@ -1,6 +1,6 @@
 <template>
   <!-- @description 数据源管理页，用类型写法声明 props/emits，支持保存、刷新与提交新建数据源 -->
-  <div style="padding: 16px;">
+  <div id="cssinjs-probe" class="cssinjs-probe-p1 cssinjs-probe-direct" style="padding: 16px;">
     <h2 style="margin: 0 0 16px; font-size: 18px;">数据源管理</h2>
     <el-table :data="rows" border>
       <el-table-column prop="id" label="ID" width="80" />
@@ -26,9 +26,10 @@
 <script setup lang="ts">
 // 本页刻意使用「类型写法」声明 props / emits，并且类型都来自跨文件 import ——
 // 用来验收 analyzer 的 vue-tsc 内核是否把自定义类型展开成真实字段结构。
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { DatasourceKind } from '../types/datasource'
 import type { DatasourceOwner, DatasourceRequest, DatasourceVO } from '../types/datasource'
+import { injectByAppendChild, injectByInsertRule } from '../vendor/fakeCssInJs'
 
 const props = defineProps<{
   // 外部可注入数据源列表；不传则用内置 mock
@@ -94,4 +95,19 @@ function onSubmit(): void {
 }
 
 defineExpose({ save, refresh, onSubmit })
+
+// —— styleShim 验收探针 ——
+// 走「模拟 CSS-in-JS 依赖」的两条注入路径（P1 / P2），从裸 document 往 head 注入样式。
+// 构建成 WC 后，它们会被镜像进容器 <runtime-vue> 的 shadow root，从而作用到本页（见 vite.ce.config.ts）。
+onMounted(() => {
+  injectByAppendChild('.cssinjs-probe-p1{outline:3px dashed rgb(22,163,74)}')
+  injectByInsertRule('#cssinjs-probe{background:rgb(240,253,244)}')
+
+  // —— 对照项：**页面自身**直写 document ——
+  // 本页面不在 styleShim.packages 名单里，所以页面里的裸 document 不会被遮蔽，
+  // 这条规则**不会**进 shadow root（用来印证「遮蔽只对被指定包生效」）。
+  const direct = document.createElement('style')
+  direct.textContent = '.cssinjs-probe-direct{outline:3px solid rgb(220,38,38)}'
+  document.head.appendChild(direct)
+})
 </script>

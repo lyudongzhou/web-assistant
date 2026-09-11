@@ -67,6 +67,11 @@
       "import": "./dist/dom.js",
       "default": "./dist/dom.js"
     },
+    "./styleSink": {
+      "types": "./dist/styleSink.d.ts",
+      "import": "./dist/styleSink.js",
+      "default": "./dist/styleSink.js"
+    },
     "./runtime": {
       "types": "./dist/runtime.d.ts",
       "import": "./dist/runtime.js",

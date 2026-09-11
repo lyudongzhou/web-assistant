@@ -196,6 +196,16 @@ webassistant/
   ⚠️ 注意：页面 `<style scoped>` 的 `:deep()` 只对「页面自己模板里 teleport 的内容」生效；像
   `el-dialog` 这种**子组件内部** teleport 到 body 的节点不会带页面的 `data-v-xxx`，`:deep(.el-dialog__title)`
   命中不了。定制浮层请用 `dialog-class`/`popper-class` + 非 scoped 的 `<style>` 块。
+- **反向补齐（document → shadow）**：CSS-in-JS / UI 依赖在运行时 `document.head.appendChild(<style>)`
+  注入样式，这些样式在 document 树里、**匹配不到 shadow 树**，WC 里就不生效。由 `styleSink.ts`
+  兜：容器 `mountContainer` 把自己的 shadow root 登记为「样式收件人」
+  （`addStyleTarget`，状态在 `globalThis` + `Symbol.for`，跨 bundle 唯一）；
+  `vite-plugin-wc` 的 `styleShim.packages` 会把**指定包**的模块前置成
+  `var document = …shadowDocument(globalThis.document)` —— 包内裸 `document` 的 `<style>/<link>` 插入
+  被**改道**：真节点直接移进注册表里的 shadow root（不再往 head 放、也不再克隆），
+  样式归容器所有 → 容器卸载即随元素销毁；切页按「页级 scope」摘下 / 挂回（ESM 只求值一次，不能真销毁）。
+  模块级 transform 让 Rollup 把该绑定改名成 `document$N`，所以遮蔽范围**只收敛在被指定包内**。
+  已知缺口：`window.document` 等全局属性路径、未列入 `packages` 的子依赖、多容器（见 vite-plugin-wc README 6.2）。
 
 ### 6.3 路由：单一真相源 + 两条入口
 
@@ -326,6 +336,12 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | TS 化后 manifest 丢 prop 类型 | `Array as PropType<User[]>` 让 `type` 解析成 `Any` | 解析时剥掉 `TSAsExpression` 再取构造器名；且**页面保留运行时 `defineProps({})` 写法**（类型写法拿不到注释里的 description） |
 | vite 被解析成多个实例 | 插件返回的 `Plugin` 在 demo 侧报「两个同名但无关的类型」 | vite 的 `@types/node` 是可选 peer，版本不同就会分裂实例 → 消费方显式声明同版本 `@types/node`（根 `pnpm-workspace.yaml` 有 overrides 注释） |
 | 改了 analyzer 源码但产物没变 | `wc-analyze` bin 指向 `dist/`，不会自动重建 | 用根脚本 `pnpm analyze`（先 build 再跑），别直接调 bin |
+| 依赖往 `document.head` 注入样式，WC 里看不到 | CSS-in-JS 的 `<style>` 落在光 DOM，shadow DOM 匹配不到 | `styleShim`：指定包模块前置 `var document = shadowDocument(...)`（Rollup 改名收敛在包内）+ 容器登记 shadow root 为收件人 |
+| 克隆体与源不同步（空 `<style>` + `insertRule`、先挂空后填） | clone 方案下镜像可能滞后成空壳，还要按内容去重（多个包同时空插入会撞车） | 改 clone 为**改道**：库自己的**真节点**直接移进容器 shadow root，`sheet` 天然生效，无需挂钩 / 去重 |
+| 切页后样式没法销毁（ESM 只求值一次） | 直接删了、再进该页不会重新注入 → 掉样式 | **页级 scope**：`activateStyleScope(tag)` 把非当前页节点摘下缓存、切回再挂回 |
+| 给 `document` 套裸 Proxy 就崩 | `document.createElement` 抛 `Illegal invocation`（品牌校验） | `bindProxy`：取属性 `Reflect.get(t,k,t)`、函数 `bind` 到真对象并缓存 |
+| 用 `{...window}` 遮蔽 window 直接崩 | 变成普通对象、`addEventListener` 不是函数、`localStorage` 抛 SecurityError | 不遮蔽 `window`；`var document` 只覆盖裸标识符，`window.document` 记为已知缺口 |
+| CSS-in-JS 注入代码散在子依赖里 | 只填主包名会漏（`3d-force-graph` 的样式其实由 3 个包各自注入） | 对目标子树逐包 `grep -c 'styleInject('`；构建后核对产物里未改写的 `document.head \|\| …getElementsByTagName("head")` 残留数为 0 |
 
 ## 八、运行方式
 
