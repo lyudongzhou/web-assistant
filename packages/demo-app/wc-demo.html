@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>runtime 验收台（不依赖 chat-client）</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #f9fafb;
+        color: #111827;
+      }
+      header {
+        padding: 12px 16px;
+        background: #fff;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 16px;
+      }
+      .hint {
+        font-size: 12px;
+        color: #6b7280;
+      }
+      .bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      button {
+        padding: 5px 12px;
+        font-size: 13px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background: #fff;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: #7c3aed;
+        color: #7c3aed;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-left: auto;
+        font-size: 12px;
+        color: #7c3aed;
+        align-self: center;
+      }
+      main {
+        display: flex;
+        gap: 12px;
+        padding: 12px;
+        align-items: flex-start;
+      }
+      #stage {
+        flex: 1;
+        min-width: 0;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 8px;
+        min-height: 420px;
+      }
+      #log {
+        width: 360px;
+        max-height: 70vh;
+        overflow: auto;
+        margin: 0;
+        padding: 10px;
+        font-size: 11px;
+        line-height: 1.6;
+        background: #111827;
+        color: #d1fae5;
+        border-radius: 8px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>runtime 验收台</h1>
+      <div class="hint">
+        直接 import <code>@webassistant/wc-runtime-core</code> 的 dist（零构建），按 manifest v2
+        动态加载 <code>containers/vue.js</code> 与 <code>pages/*.js</code>。
+      </div>
+      <div class="bar" id="bar"><span class="status" id="status">初始化中…</span></div>
+    </header>
+    <main>
+      <div id="stage"></div>
+      <pre id="log"></pre>
+    </main>
+
+    <!-- 验收台是静态页面，import map 写在 HTML 里（不是运行时注入，不受「模块已开始加载」限制） -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@webassistant/wc-runtime-core": "/node_modules/@webassistant/wc-runtime-core/dist/index.js",
+          "@webassistant/protocol": "/node_modules/@webassistant/protocol/dist/index.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import { activityBus, createRuntime } from '@webassistant/wc-runtime-core'
+
+      const bar = document.getElementById('bar')
+      const stage = document.getElementById('stage')
+      const statusEl = document.getElementById('status')
+      const logEl = document.getElementById('log')
+
+      const log = (label, data) => {
+        const time = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+        const body = data === undefined ? '' : ` ${JSON.stringify(data)}`
+        logEl.textContent = `${time} ${label}${body}\n${logEl.textContent}`
+      }
+
+      // ---- WC 执行监视：activityBus 是全局单例（Symbol.for + globalThis）----
+      // 容器侧把 defineExpose 的每个方法包了一层，任何经 runtime.getPageExposed() 的调用
+      // （agent 的 call_page_method / 宿主代码 / 这个验收台）都会自动落一条 kind:'call' 记录：
+      // { name, args, ok, durationMs, result|error, origin }。点下面的「模拟 call_page_method」即可看到。
+      activityBus.on((activity) => log(`activity.${activity.kind}`, activity))
+
+      // 宿主注入的「外层依赖」：全部是框架无关的纯函数 / 纯数据
+      const runtime = createRuntime({
+        manifestUrl: '/manifest.json',
+        assetBase: '/dist-ce',
+        services: {
+          request: async (url, init) => {
+            log('services.request', url)
+            const res = await fetch(url, init)
+            return res.json()
+          },
+          t: (key) => `【${key}】`,
+          getToken: () => 'demo-token',
+          theme: { '--el-color-primary': '#7c3aed' },
+          state: { user: { name: '宿主用户' } },
+          emit: (event, payload) => log('services.emit', { event, payload }),
+        },
+      })
+      // 验收台直通：控制台/「模拟 call_page_method」按钮可走 runtime.getPageExposed() 等公开 API，
+      // 与 chat-client 的 call_page_method 执行器同一条入口
+      window.__waRuntime = runtime
+
+      const button = (text, onClick) => {
+        const el = document.createElement('button')
+        el.textContent = text
+        el.addEventListener('click', onClick)
+        bar.insertBefore(el, statusEl)
+        return el
+      }
+
+      const backBtn = button('← 返回', () => runtime.back())
+      backBtn.disabled = true
+
+      runtime.on('navigate', ({ route, source, canGoBack }) => {
+        statusEl.textContent = `当前：${route.title ?? route.tag}（来源 ${source}）`
+        log('navigate', { tag: route.tag, source, canGoBack })
+        backBtn.disabled = !canGoBack
+      })
+      runtime.on('status', (payload) => log('status', payload))
+      runtime.on('page-event', (payload) => log('page-event', payload))
+      runtime.on('error', (payload) => log('error', payload.message))
+
+      await runtime.init(stage)
+
+      for (const route of runtime.routes) {
+        const params = route.params.length ? { id: 3 } : undefined
+        button(route.title ?? route.tag, () =>
+          runtime.navigate({ tag: route.tag, params, source: 'agent' }),
+        )
+      }
+      button('setState(改名字)', () =>
+        runtime.setState({ user: { name: `名字${Math.floor(Math.random() * 100)}` } }),
+      )
+      // 模拟 agent 的 call_page_method：走与 chat-client 完全相同的入口 runtime.getPageExposed()
+      button('模拟 call_page_method', async () => {
+        const exposed = runtime.getPageExposed()
+        const name = exposed ? Object.keys(exposed)[0] : undefined
+        if (!name) {
+          log('call_page_method', { error: '当前页没有可调用方法' })
+          return
+        }
+        try {
+          const value = await exposed[name]()
+          log('call_page_method', { name, value })
+        } catch (cause) {
+          log('call_page_method', { name, error: cause instanceof Error ? cause.message : String(cause) })
+        }
+      })
+      button('导航到不存在的页面', () => runtime.navigate({ tag: 'nope-page' }))
+
+      log('init 完成', { routes: runtime.routes.map((r) => r.tag) })
+    </script>
+  </body>
+</html>

@@ -1,0 +1,68 @@
+{
+  "name": "@webassistant/protocol",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "跨包契约：wc.pages.json / manifest v2 / WebSocket / 页面观察 / page-event（纯类型 + 命名工具，零依赖）",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./wcPages": {
+      "types": "./dist/wcPages.d.ts",
+      "import": "./dist/wcPages.js",
+      "default": "./dist/wcPages.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js",
+      "default": "./dist/manifest.js"
+    },
+    "./sse": {
+      "types": "./dist/sse.d.ts",
+      "import": "./dist/sse.js",
+      "default": "./dist/sse.js"
+    },
+    "./pageEvent": {
+      "types": "./dist/pageEvent.d.ts",
+      "import": "./dist/pageEvent.js",
+      "default": "./dist/pageEvent.js"
+    },
+    "./observation": {
+      "types": "./dist/observation.d.ts",
+      "import": "./dist/observation.js",
+      "default": "./dist/observation.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js",
+      "default": "./dist/session.js"
+    },
+    "./websocket": {
+      "types": "./dist/websocket.d.ts",
+      "import": "./dist/websocket.js",
+      "default": "./dist/websocket.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

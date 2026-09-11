@@ -1,0 +1,24 @@
+{
+  "name": "webassistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "对话式 Web 助手：把路由页面编译为 Web Component，供 Agent 按需推送渲染",
+  "scripts": {
+    "dev": "pnpm --filter demo-app dev",
+    "build:libs": "pnpm --filter @webassistant/protocol build && pnpm --filter @webassistant/wc-runtime-core build && pnpm --filter @webassistant/wc-runtime-vue build && pnpm --filter @webassistant/analyzer build && pnpm --filter @webassistant/vite-plugin-wc build && pnpm --filter @webassistant/chat-client build:lib",
+    "build:ce": "pnpm build:libs && pnpm --filter demo-app build:ce",
+    "analyze": "pnpm --filter @webassistant/analyzer build && pnpm --filter demo-app analyze",
+    "preview:ce": "pnpm --filter demo-app preview:ce",
+    "test": "pnpm --filter @webassistant/wc-runtime-core test && pnpm --filter @webassistant/wc-runtime-vue test && pnpm --filter @webassistant/analyzer test",
+    "typecheck": "pnpm -r typecheck",
+    "dev:client": "pnpm --filter @webassistant/chat-client dev",
+    "dev:agent": "pnpm --filter agent-server dev",
+    "changeset": "changeset",
+    "release:check": "changeset status",
+    "version-packages": "changeset version",
+    "release": "pnpm build:libs && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.1"
+  }
+}

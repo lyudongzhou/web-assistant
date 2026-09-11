@@ -1,0 +1,47 @@
+{
+  "name": "@webassistant/chat-client",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "对话 + 渲染客户端（WebAssistant 组件），可被宿主项目内嵌",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./style.css": "./dist/style.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:lib": "vite build --config vite.lib.config.ts && vue-tsc --declaration --emitDeclarationOnly -p tsconfig.build.json",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm build:lib"
+  },
+  "dependencies": {
+    "@webassistant/protocol": "workspace:^",
+    "@webassistant/wc-runtime-core": "workspace:^",
+    "@webassistant/wc-runtime-vue": "workspace:^"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.0.7",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

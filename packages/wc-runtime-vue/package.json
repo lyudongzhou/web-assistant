@@ -1,0 +1,66 @@
+{
+  "name": "@webassistant/wc-runtime-vue",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "WC runtime 的 Vue 实现与唯一对外门面（容器 / 页面注册 / vue-router 桥 / 服务注入）",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./container": {
+      "types": "./dist/container.d.ts",
+      "import": "./dist/container.js",
+      "default": "./dist/container.js"
+    },
+    "./definePage": {
+      "types": "./dist/definePage.d.ts",
+      "import": "./dist/definePage.js",
+      "default": "./dist/definePage.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "import": "./dist/context.js",
+      "default": "./dist/context.js"
+    },
+    "./vueRouterBridge": {
+      "types": "./dist/vueRouterBridge.d.ts",
+      "import": "./dist/vueRouterBridge.js",
+      "default": "./dist/vueRouterBridge.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js",
+      "default": "./dist/host.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test test/*.test.js",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "@webassistant/protocol": "workspace:^",
+    "@webassistant/wc-runtime-core": "workspace:^"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

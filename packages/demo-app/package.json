@@ -1,0 +1,37 @@
+{
+  "name": "demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "示例「老项目」：SPA 模式验证页面，CE 模式把容器 + 页面编译成一批可动态加载的 WC",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:ce": "vite build --config vite.ce.config.ts",
+    "analyze": "wc-analyze --config wc.pages.json",
+    "preview:ce": "node serve.mjs",
+    "typecheck": "vue-tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@webassistant/wc-runtime-vue": "workspace:*",
+    "axios": "^1.20.0",
+    "element-plus": "^2.14.5",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.20.1",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@webassistant/analyzer": "workspace:*",
+    "@webassistant/protocol": "workspace:*",
+    "@webassistant/vite-plugin-wc": "workspace:*",
+    "@webassistant/wc-runtime-core": "workspace:*",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

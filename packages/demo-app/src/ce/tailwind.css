@@ -1,0 +1,6 @@
+/* Tailwind CSS 入口（Tailwind v4 + @tailwindcss/vite 插件）：
+ * - 容器入口用 ?inline 导入后放进 shadowStyles，让页面 class 生效。
+ * - 页面 class（flex / px-4 等）由插件在构建时按 content 扫描生成。
+ * - 注意：preflight(reset) 里的 :root 会被 core 的 rewriteRootToHost 重写为 :host。
+ */
+@import 'tailwindcss';

@@ -1,0 +1,43 @@
+{
+  "changeId": "agent-wc-expose-and-emit",
+  "revisions": [
+    {
+      "id": "rev-36076a40",
+      "description": "analyzer 落地实施定案：manifest 采用 events(名字数组，runtime CE 监听白名单，向后兼容) + emits(富信息 payloadType/description) + exposes 三字段并写，空时省略；analyzer 与 vite-plugin-wc 两处同步同一映射；build:libs 依赖顺序修正（analyzer 先于 vite-plugin-wc，后者编译依赖前者的 ParsedComponent 类型）；serializeFunctionType 对标识符引用回查顶层函数声明取 signature/JSDoc（修复 `refresh→ refresh` 式 prompt 污染）；leadingComment 只取就近一条注释（分区注释不算描述）；analyzer 新增 node --test 单测（parseComponent + analyze 双写契约）",
+      "author": "AI",
+      "createdAt": "2026-09-07T05:53:00.824Z",
+      "metadata": {
+        "type": "behavior",
+        "affectedAPI": "manifest v2 页面条目（新增 emits/exposes 输出，events 语义不变）",
+        "affectedField": "events / emits / exposes",
+        "updateTarget": [
+          "specs",
+          "design"
+        ],
+        "source": {
+          "file": "packages/analyzer/src/analyze.ts + packages/vite-plugin-wc/src/manifest.ts + package.json(build:libs)",
+          "function": "analyze / analyzePage / build:libs"
+        }
+      }
+    },
+    {
+      "id": "rev-d0173386",
+      "description": "修正 design.md 的错误机制假设：Vue 3.5.41 的 defineCustomElement 并不会把 defineExpose 结果挂在 element.exposed property 上（实际：原始对象在 element._instance.exposed，expose 成员被拷成元素自身 property）。wc-runtime-vue adapter 的 getPageExposed 由只读 `.exposed` 改为 `element.exposed ?? element._instance?.exposed` 双路读取；此 bug 经 demo-app preview:ce 浏览器实机验证发现（exposedKeys 为 null → setKeyword/refresh 实调成功、page-event 收到），并补 adapter.test.js 回归用例",
+      "author": "AI",
+      "createdAt": "2026-09-07T06:34:37.509Z",
+      "metadata": {
+        "type": "behavior",
+        "affectedAPI": "runtime.getPageExposed / adapter.getPageExposed",
+        "affectedField": "返回值 Record<string, unknown>（不变），读取路径变化",
+        "updateTarget": [
+          "specs",
+          "design"
+        ],
+        "source": {
+          "file": "packages/wc-runtime-vue/src/container.ts",
+          "function": "getPageExposed"
+        }
+      }
+    }
+  ]
+}

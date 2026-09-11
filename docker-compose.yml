@@ -1,0 +1,42 @@
+# agent-server 的 Docker Compose 定义：直接**运行服务器上已存在的镜像**（不做任何构建）。
+#
+# 前置：镜像已在目标机（例如 deploy.sh 上传 tar.gz 后 `docker load`，tag = agent-server:amd64）
+#   确认：docker images | grep agent-server
+#
+# 快速开始（在有本文件与 .env.deploy 的目录执行）：
+#   cp .env.deploy.example .env.deploy     # 填入 DEEPSEEK_API_KEY / MANIFEST_URL 等
+#   docker compose up -d                   # 启动
+#   docker compose logs -f                 # 看日志
+#   curl http://localhost:3000/health      # => {"ok":true,"hasApiKey":true}
+#   docker compose down                    # 停止
+#
+# 说明：
+#   - 镜像 tag 不是 agent-server:amd64 时：IMAGE=your/tag docker compose up -d（或改下面 image）。
+#   - 宿主机端口用 HOST_PORT 控制（compose 插值：shell 变量或同目录 .env），默认 3000：
+#       HOST_PORT=19400 docker compose up -d
+#   - 运行时配置/密钥走 .env.deploy（模板 .env.deploy.example，已被 .gitignore 忽略）。
+
+services:
+  agent-server:
+    image: ${IMAGE:-agent-server:amd64}
+    container_name: agent-server
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    # 运行时配置与密钥：DEEPSEEK_API_KEY / MANIFEST_URL / 代理 等
+    # required: false —— 文件缺失不报错（此时需自行以其它方式提供变量）
+    env_file:
+      - path: .env.deploy
+        required: false
+    environment:
+      # 容器内端口固定 3000（宿主机端口由上面的 ports 映射决定）
+      PORT: "3000"
+    # 若用本地 manifest 文件（MANIFEST_PATH），取消注释并挂载：
+    # volumes:
+    #   - ./manifest.json:/manifest.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

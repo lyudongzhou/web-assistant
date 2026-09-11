@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-ce/
+*.local
+.DS_Store
+*.log
+.env
+.env.deploy
+agent-server-amd64.tar.gz
+.analyze-cache.json
+.wc-manifest-cache.json

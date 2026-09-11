@@ -1,0 +1,39 @@
+{
+  "name": "agent-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "docker:build": "bash build-image.sh"
+  },
+  "dependencies": {
+    "@cline/sdk": "^0.0.77",
+    "@nestjs/common": "^11.2.1",
+    "@nestjs/core": "^11.2.1",
+    "@nestjs/platform-fastify": "^11.2.1",
+    "@nestjs/platform-ws": "^11.2.1",
+    "@nestjs/websockets": "^11.2.1",
+    "@webassistant/protocol": "workspace:*",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.12.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "undici": "^6.28.0",
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  }
+}

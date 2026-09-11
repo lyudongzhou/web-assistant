@@ -1,0 +1,12 @@
+{
+  "framework": "vue",
+  "pages": [
+    {
+      "name": "TypeFacts",
+      "tag": "type-facts",
+      "path": "/type-facts",
+      "title": "类型事实页",
+      "component": "./TypeFactsPage.vue"
+    }
+  ]
+}

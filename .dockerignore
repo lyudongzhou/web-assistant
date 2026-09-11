@@ -1,0 +1,28 @@
+# 版本控制
+.git
+.gitignore
+
+# 依赖与构建产物（镜像内重新安装/构建）
+node_modules
+**/node_modules
+dist
+**/dist
+dist-ce
+**/dist-ce
+
+# 密钥与本地配置（切勿打进镜像）
+.env
+**/.env
+*.local
+
+# 日志与缓存
+*.log
+.DS_Store
+.analyze-cache.json
+.wc-manifest-cache.json
+
+# 与运行时无关的目录
+docs
+openspec
+.changeset
+.clinerules

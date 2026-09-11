@@ -1,0 +1,55 @@
+{
+  "name": "@webassistant/analyzer",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "读 wc.pages.json + 页面源码（静态解析 + AI 语义分析）→ 生成 manifest v2",
+  "bin": {
+    "wc-analyze": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/analyze.d.ts",
+      "import": "./dist/analyze.js",
+      "default": "./dist/analyze.js"
+    },
+    "./parseComponent": {
+      "types": "./dist/parseComponent.d.ts",
+      "import": "./dist/parseComponent.js",
+      "default": "./dist/parseComponent.js"
+    },
+    "./ai": {
+      "types": "./dist/ai.d.ts",
+      "import": "./dist/ai.js",
+      "default": "./dist/ai.js"
+    },
+    "./typeResolver": {
+      "types": "./dist/typeResolver.d.ts",
+      "import": "./dist/typeResolver.js",
+      "default": "./dist/typeResolver.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test test/*.test.js",
+    "analyze": "pnpm build && node dist/index.js"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.26.5",
+    "@volar/typescript": "^2.4.15",
+    "@vue/compiler-sfc": "^3.5.13",
+    "@vue/language-core": "^2.2.12",
+    "@webassistant/protocol": "workspace:^",
+    "dotenv": "^17.4.2",
+    "typescript": "^5.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

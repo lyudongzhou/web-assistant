@@ -1,0 +1,18 @@
+packages:
+  - "packages/*"
+
+# 统一 @types/node 与 vite：否则 vite 会被解析成多个实例（peer 后缀不同），
+# 插件返回的 Plugin 类型在 demo-app 侧被判为「两个同名但无关的类型」。
+# （tailwindcss v4 依赖 lightningcss，会把 vite 解析成带不同 peer 后缀的副本，必须 overrides 锁死）
+overrides:
+  "@types/node": ^22.20.1
+  "vite": ^6.0.7
+
+onlyBuiltDependencies:
+  - esbuild
+  - protobufjs
+  - vue-demi
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+  vue-demi: true

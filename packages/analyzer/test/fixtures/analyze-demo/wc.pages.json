@@ -1,0 +1,7 @@
+{
+  "framework": "vue",
+  "pages": [
+    { "name": "UserList", "tag": "user-list", "path": "/users", "title": "用户列表", "component": "./UserList.vue" },
+    { "name": "Plain", "tag": "plain", "path": "/plain", "component": "./Plain.vue" }
+  ]
+}
