@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/chat-client",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "description": "对话 + 渲染客户端（WebAssistant 组件），可被宿主项目内嵌",
   "main": "./dist/index.js",
