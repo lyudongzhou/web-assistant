@@ -248,3 +248,58 @@ httpClient.interceptors.response.use(
 | axios 请求没上报 agent | 拦截器没装；或 manifest 该页面没声明 `dataSources`（白名单过滤） |
 | el-select 下拉样式错乱 | 容器缺 `lightDomStyles`（浮层 teleport 到 body 的补丁） |
 | 页面里 `useRoute()` 拿不到参数 | 用 `defineProps` 的 `id` prop（runtime 会把 params 归一为 prop） |
+
+---
+
+## 8. 渲染区欢迎页（空态）自定义
+
+欢迎页 = **runtime 当前没有页面（没有渲染子 WC）** 时渲染区的默认内容，不是独立功能。
+判据来自 runtime：`RuntimeView.tag === null`（等于 `Runtime.hasPage === false`）。默认首屏**不自动打开页面**，
+所以真实流程是「刷新 → 欢迎页 → 用户说话 / agent render → 页面接管渲染区」。
+
+### 8.1 三种覆盖方式（模板宿主）
+
+```vue
+<!-- ① 具名插槽：入参是合并后的完整状态（text / capabilities / loading / variant + welcome / routes / currentTag） -->
+<WebAssistant wc-base="/wc">
+  <template #welcome="{ text, capabilities, loading, variant }">
+    <MyWelcome :text="text" :items="capabilities" :loading="loading" :variant="variant" />
+  </template>
+</WebAssistant>
+
+<!-- ② 传组件：组件收到 text / capabilities / loading 三个 prop -->
+<WebAssistant wc-base="/wc" :welcome="MyWelcome" />
+
+<!-- ③ 关闭：回退最小空态（“暂无页面 / 在左侧对话中描述你想打开的页面”） -->
+<WebAssistant wc-base="/wc" :welcome="false" />
+```
+
+```ts
+// ④ 命令式挂载同样支持
+mountWebAssistant('#app', { wcBase: '/wc', welcome: MyWelcome })
+// 不需要欢迎页：让首屏直接进页面
+mountWebAssistant('#app', { wcBase: '/wc', initialPage: true })            // manifest 第一个页面
+mountWebAssistant('#app', { wcBase: '/wc', initialPage: 'user-list' })     // 指定 tag
+```
+
+### 8.2 headless：自己渲染，但复用同一份逻辑
+
+```ts
+import { WelcomePage, useWebAssistant } from '@webassistant/chat-client'
+
+const { welcomePage, hasPage, currentTag, error } = useWebAssistant({ wcBase: '/wc', wsBase: '/ws' })
+// welcomePage.variant / .visible / .text / .capabilities / .loading
+// 也可以只用原始数据自己合并：welcome / routes / currentTag / sessionReady / manifestSettled
+```
+
+`welcomePage` 与内置 `WelcomePage.vue` 共用同一份逻辑（`lib/welcome.ts`），不会出现「内置有兜底、自定义没有」的漂移：
+
+| 输出 | 含义 |
+|---|---|
+| `variant` | `page`（有页面，渲染区被页面接管）/ `welcome-loading`（无页 + 数据源未就绪）/ `welcome` |
+| `text` | 欢迎语：agent 握手载荷优先，缺省回退 `DEFAULT_WELCOME_TEXT` |
+| `capabilities` | 能力卡片：agent 载荷优先；旧服务端未下发时用本地 manifest 路由兜底（`tag` / `name` / `title`） |
+| `loading` | 是否仍在等数据源（`session.ready` / manifest 都未 settle；**失败也算 settle**，不会死转圈） |
+
+> 注意：欢迎页组件由**宿主构建的 Vue**渲染（light DOM），因此可以用宿主自己的 UI 库 / 主题变量（`--wa-*`）。
+> 容器内的 `renderEmpty`（批次内空态）是另一回事：它属于容器 shadow DOM 内部、由被服务项目配置。

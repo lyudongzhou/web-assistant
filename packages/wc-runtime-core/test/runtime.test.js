@@ -25,6 +25,8 @@ test('runtime：init 顺序 —— 建容器 → 挂载 → 首帧渲染', async
   await runtime.init(fakeRoot())
   assert.deepEqual(calls.slice(0, 2), ['defineContainer:runtime-vue', 'mount:runtime-vue'])
   assert.equal(runtime.current.route.tag, 'user-list', '缺省导航到第一条路由')
+  assert.equal(runtime.hasPage, true, '缺省导航后已有页面')
+  assert.equal(runtime.view.tag, 'user-list')
   runtime.dispose()
 })
 
@@ -148,10 +150,13 @@ test('runtime：initial=null 时不导航，容器也不创建（完全懒建）
   assert.equal(handles.length, 0)
   assert.equal(runtime.view.status, 'idle')
   assert.equal(runtime.view.tag, null)
+  // 没有渲染子 WC ⇒ hasPage=false：宿主据此展示渲染区空态（欢迎页）
+  assert.equal(runtime.hasPage, false)
 
   // 首次导航时才建容器
   await runtime.navigate({ tag: 'user-list' })
   assert.deepEqual(calls.slice(0, 2), ['defineContainer:runtime-vue', 'mount:runtime-vue'])
+  assert.equal(runtime.hasPage, true, '有页面后不再处于空态')
   runtime.dispose()
 })
 

@@ -97,11 +97,26 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `session.hello conn#${state.id} session=${session.id} resumed=${resumed} manifestVersion=${manifestVersion}`,
     )
+
+    // 每次建立连接都先说一段欢迎语（介绍能力，按 manifest 页面生成）。
+    // session.ready 是本 handler 的返回值，Nest 在 return 之后同步发送；这里用 setTimeout(0)（宏任务）
+    // 保证聊天气泡问候排在其后，客户端不会先收到 chat.text 再收到 session.ready。
+    // 结构化载荷（welcome）随 session.ready 一并下发，供渲染区「欢迎页」渲染能力卡片。
+    const welcome = this.manifests.buildWelcome()
+    if (welcome) {
+      setTimeout(() => {
+        this.logger.debug(`welcome -> session=${session.id} capabilities=${welcome.capabilities.length}`)
+        this.rpc.notify(session.id, { t: 'chat.text', delta: welcome.text })
+        this.rpc.notify(session.id, { t: 'chat.done', steps: 0 })
+      }, 0)
+    }
+
     return {
       t: 'session.ready' as const,
       sessionId: session.id,
       resumed,
       manifestVersion,
+      ...(welcome ? { welcome } : {}),
     }
   }
 

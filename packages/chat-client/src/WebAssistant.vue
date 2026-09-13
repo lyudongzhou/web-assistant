@@ -31,12 +31,24 @@
         </div>
         <div class="render-body">
           <div ref="mountEl" class="mount" :class="{ 'has-page': hasPage }"></div>
+          <!-- 渲染区空态（runtime 没有渲染子 WC）→ 欢迎页。
+               覆盖优先级：`#welcome` 插槽 > `welcome` prop > 内置 WelcomePage > `welcome=false` 最小空态。
+               错误独立成横幅，不再顶掉欢迎页。 -->
           <div v-if="!hasPage" class="empty">
-            <p v-if="error">{{ error.message }}</p>
-            <template v-else>
-              <p>暂无页面</p>
-              <p class="hint">在左侧对话中描述你想打开的页面<br />页面将在这里渲染</p>
-            </template>
+            <p v-if="error" class="error-tip">{{ error.message }}</p>
+            <slot name="welcome" v-bind="welcomeSlotProps">
+              <component
+                :is="welcomeComponent"
+                v-if="welcomeComponent"
+                :text="welcomeText"
+                :capabilities="welcomeCapabilities"
+                :loading="welcomeLoading"
+              />
+              <template v-else>
+                <p>暂无页面</p>
+                <p class="hint">在左侧对话中描述你想打开的页面<br />页面将在这里渲染</p>
+              </template>
+            </slot>
           </div>
         </div>
       </div>
@@ -53,14 +65,18 @@
 </template>
 
 <script setup lang="ts">
+import { computed, type Component } from 'vue'
 import ChatPanel from './components/ChatPanel.vue'
 import ActivityLog from './components/ActivityLog.vue'
+import WelcomePage from './components/WelcomePage.vue'
 import { useWebAssistant } from './composables/useWebAssistant.js'
+import { resolveWelcomeComponent } from './lib/welcome.js'
 import type {
   PageChangeInfo,
   PageEventPayload,
   RuntimeErrorInfo,
   WebAssistantProps,
+  WelcomePageSlotProps,
 } from './types.js'
 
 const props = withDefaults(defineProps<WebAssistantProps>(), {
@@ -74,6 +90,10 @@ const props = withDefaults(defineProps<WebAssistantProps>(), {
   forwardPageEvents: false,
   showActivityLog: false,
   debug: false,
+  // ★ 必须显式给默认值：`welcome` 的类型含 Boolean，Vue 会把「缺省」布尔转换为 `false`
+  //   （isAbsent && !hasDefault → value = false），那样「不传 welcome」会被误判成「宿主关闭了欢迎页」，
+  //   内置 WelcomePage 永远不渲染、只剩最小空态。给了 default 后缺省即 undefined。
+  welcome: undefined,
 })
 
 const emit = defineEmits<{
@@ -87,6 +107,8 @@ const emit = defineEmits<{
 const {
   messages,
   loading,
+  welcome: welcomeData,
+  welcomePage,
   send,
   cancel,
   mountEl,
@@ -95,18 +117,48 @@ const {
   canGoBack,
   status,
   error,
+  routes,
+  currentTag,
   activities,
   clearActivities,
   back,
 } = useWebAssistant({
   wcBase: props.wcBase,
   wsBase: props.wsBase,
+  initialPage: props.initialPage,
   services: props.services,
   debug: props.debug,
   onPageChange: (info) => emit('page-change', info),
   onPageEvent: (payload) => emit('page-event', payload),
   onError: (info) => emit('error', info),
 })
+
+// 欢迎页 = 渲染区空态（runtime 没有渲染子 WC）。状态机在 useWebAssistant 里算好（纯逻辑见 lib/welcome.ts），
+// 因此「内置默认」与「宿主自定义」用的是同一份判断/合并。
+const {
+  variant: welcomeVariant,
+  text: welcomeText,
+  capabilities: welcomeCapabilities,
+  loading: welcomeLoading,
+} = welcomePage
+
+// 覆盖组件：`welcome=false` 关闭（回退最小空态）；缺省用内置 WelcomePage。
+// `#welcome` 具名插槽优先级最高（见模板；插槽入参是合并后的完整状态）。
+// 用 resolveWelcomeComponent 而不是三元表达式：非组件值（含 Vue 布尔转换产生的 true/空串）也回退内置组件。
+const welcomeComponent = computed<Component | null>(() =>
+  resolveWelcomeComponent<Component>(props.welcome, WelcomePage),
+)
+
+// `#welcome` 插槽入参：合并后的欢迎页状态（宿主模板不必自己判空/合并）
+const welcomeSlotProps = computed<WelcomePageSlotProps>(() => ({
+  welcome: welcomeData.value,
+  routes: routes.value,
+  currentTag: currentTag.value,
+  variant: welcomeVariant.value,
+  text: welcomeText.value,
+  capabilities: welcomeCapabilities.value,
+  loading: welcomeLoading.value,
+}))
 </script>
 
 <style scoped>
@@ -218,11 +270,27 @@ const {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
   color: var(--wa-text-muted, #9ca3af);
 }
 .empty .hint {
   font-size: 13px;
   text-align: center;
   line-height: 1.6;
+}
+/* 渲染区错误横幅：与欢迎页解耦（错误不再顶掉欢迎页；有页面时也能看到） */
+.error-tip {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--wa-error-border, #fecaca);
+  border-radius: var(--wa-radius, 8px);
+  background: var(--wa-error-bg, #fef2f2);
+  color: var(--wa-error-text, #b91c1c);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
 }
 </style>

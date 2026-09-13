@@ -403,6 +403,13 @@ export function createRuntime(options: CreateRuntimeOptions): Runtime {
     get canGoForward() {
       return nav.canGoForward
     },
+    /**
+     * 有没有页面（渲染区有没有渲染出子 WC）。与 `view.tag` 同源：
+     * `false` 时宿主应展示渲染区空态（欢迎页）。注意 `initial: null` 时不导航 → 天然为 `false`。
+     */
+    get hasPage() {
+      return nav.currentRoute !== null
+    },
     get view() {
       return buildView()
     },

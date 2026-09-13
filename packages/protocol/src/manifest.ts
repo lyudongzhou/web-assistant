@@ -50,6 +50,11 @@ export interface ManifestPage {
   description?: string
   keywords?: string[]
   exampleQueries?: string[]
+  /**
+   * 页面级 agent 规则（仅在该页面生效；随 manifest 下发）。
+   * 由 `wc.pages.json` 页面条目的 `rules` 声明，analyzer / wcManifestPlugin 自动收集。
+   */
+  rules?: ManifestRule[]
   /** 页面可上报的数据源（agent 规划依据 + runtime 摘要白名单） */
   dataSources?: ManifestDataSource[]
   /**
@@ -84,6 +89,23 @@ export interface ManifestEvent {
   description?: string
 }
 
+/**
+ * 项目级 agent 规则（随 manifest 一同下发）。
+ *
+ * 粒度是 **manifest 级**：一波页面（一个 manifest）共享一波规则。
+ * 由 `wc.pages.json` 的 `rules` 声明，analyzer / wcManifestPlugin 自动收集正文并内联进 manifest，
+ * agent-server 读取后注入 system prompt。
+ * 字段名对齐 Cline SDK 的 `RuleConfig`（name / disabled / instructions），便于后续扩展。
+ */
+export interface ManifestRule {
+  /** 规则名（文件基名或显式 name），用于日志/调试与去重 */
+  name: string
+  /** 规则正文（Markdown） */
+  instructions: string
+  /** 是否禁用（保留在 manifest 中但不注入 prompt） */
+  disabled?: boolean
+}
+
 export interface ManifestContainer {
   /** 容器 bundle 相对路径，如 containers/vue.js */
   bundle: string
@@ -96,6 +118,8 @@ export interface RuntimeManifest {
   version: typeof MANIFEST_VERSION
   containers: Record<string, ManifestContainer>
   styles?: { shared?: string[] }
+  /** 项目级 agent 规则（可选；随 manifest 下发，agent-server 注入 system prompt） */
+  rules?: ManifestRule[]
   pages: ManifestPage[]
 }
 

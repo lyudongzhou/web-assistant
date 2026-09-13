@@ -12,7 +12,21 @@ export interface WcPageEntry {
   title?: string
   /** 页面组件路径：相对项目根 / 别名（#、@）/ 裸包名 */
   component: string
+  /**
+   * 页面级 agent 规则 —— 只在该页面生效（与 manifest 级 rules 同款声明，见 {@link WcRuleEntry}）。
+   * analyzer / wcManifestPlugin 自动收集进 `manifest.pages[].rules`。
+   */
+  rules?: WcRuleEntry[]
 }
+
+/**
+ * 规则文档声明：项目内 Markdown 文件/目录路径（相对项目根），或内联正文。
+ * - `string`：路径；指向文件时读该文件，指向目录时**自动收集**目录下所有 `.md`（按文件名排序）
+ * - `{ name?, content }`：内联规则正文（可不落文件）
+ *
+ * Markdown 顶部可选 YAML frontmatter（`name` / `disabled`），见 {@link WcPagesConfig.rules}。
+ */
+export type WcRuleEntry = string | { name?: string; content: string }
 
 export interface WcPagesConfig {
   /** 该批次的框架，决定容器 adapter 与产物名；缺省 vue */
@@ -23,6 +37,12 @@ export interface WcPagesConfig {
   pageHelper?: string
   /** 跨容器共享样式（构建产物内的相对路径），写进 manifest.styles.shared */
   sharedStyles?: string[]
+  /**
+   * 本批次（本 manifest）共享的 agent 规则 —— 一波页面一波规则。
+   * analyzer / wcManifestPlugin 自动收集正文并内联进 `manifest.rules`（供 agent-server 注入 prompt）。
+   * 规则 Markdown 顶部可选 frontmatter：`--- name: xxx / disabled: true ---`。
+   */
+  rules?: WcRuleEntry[]
   pages: WcPageEntry[]
 }
 

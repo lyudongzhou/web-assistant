@@ -1,7 +1,7 @@
 // 渲染宓主：把 runtime 的生命周期与事件包成 Vue 响应式状态。
 // manifest 加载、容器懒建、bundle 动态 import、样式注入、history、params→props 全在 runtime 里，
 // 宿主只需提供一个挂载点 + services。
-import { onMounted, onUnmounted, ref, shallowRef, type Ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, type Ref } from 'vue'
 import { createHostRuntime } from '@webassistant/wc-runtime-vue/host'
 import {
   activityBus,
@@ -21,10 +21,18 @@ import type {
   RuntimeStatus,
 } from '@webassistant/wc-runtime-vue/host'
 import type { PageEventPayload, PageChangeInfo } from '../types.js'
+import { resolveInitialTarget } from '../lib/initialPage.js'
 
 export interface UseRuntimeHostOptions {
   /** manifest 在 {wcBase}/manifest.json，产物在 {wcBase}/dist-ce */
   wcBase: () => string
+  /**
+   * 首屏是否自动打开页面：
+   * - 缺省 / `false`：不自动打开 → 渲染区展示「欢迎页」（由用户对话或 agent 决定打开哪个页面）
+   * - `true`：自动打开 manifest 的第一个页面（runtime 原有的默认行为）
+   * - 字符串：自动打开指定 tag 的页面
+   */
+  initialPage?: boolean | string
   services?: RuntimeServices
   onPageChange?: (info: PageChangeInfo) => void
   onPageEvent?: (payload: PageEventPayload) => void
@@ -53,7 +61,15 @@ export interface UseRuntimeHostReturn {
   /** 挂在渲染区域的 div 上 */
   mountEl: Ref<HTMLElement | null>
   title: Ref<string>
+  /**
+   * 渲染区是否由页面（子 WC）接管。判据来自 runtime 的 `view.tag`：
+   * `false` ⇔ runtime 没有渲染任何子 WC ⇔ 渲染区空态（宿主应显示欢迎页）。
+   */
   hasPage: Ref<boolean>
+  /** runtime 当前页 tag；null = 没有渲染子 WC（同 hasPage === false） */
+  currentTag: Ref<string | null>
+  /** 本地 manifest 是否已 settle（加载成功或失败都算）——欢迎页据此退出加载态 */
+  manifestSettled: Ref<boolean>
   canGoBack: Ref<boolean>
   status: Ref<RuntimeStatus>
   error: Ref<RuntimeErrorInfo | null>
@@ -91,7 +107,10 @@ export interface UseRuntimeHostReturn {
 export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostReturn {
   const mountEl = ref<HTMLElement | null>(null)
   const title = ref('')
-  const hasPage = ref(false)
+  // 「有没有页面」唯一真相源 = runtime 的 view.tag（= 有没有渲染子 WC），不是「导航过没有」。
+  const currentTag = ref<string | null>(null)
+  const hasPage = computed(() => currentTag.value !== null)
+  const manifestSettled = ref(false)
   const canGoBack = ref(false)
   const status = ref<RuntimeStatus>('idle')
   const error = ref<RuntimeErrorInfo | null>(null)
@@ -120,10 +139,14 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
       options.onActivity?.(activity)
     })
 
+    // runtime 默认会「自动打开 manifest 第一个页面」；chat-client 默认改为不打开（`initial: null`），
+    // 让渲染区先展示欢迎页。宿主可用 `initialPage` 恢复/指定首屏页面。
+    const initial = resolveInitialTarget(options.initialPage)
     runtime = createHostRuntime({
       manifestUrl: `${base}/manifest.json`,
       assetBase: `${base}/dist-ce`,
       services: options.services,
+      initial,
     })
 
     // 调试模式：把 runtime 交给控制台（与容器同一条 getPageExposed 入口，便于手动触发一次调用）
@@ -131,9 +154,13 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
       Object.defineProperty(globalThis, '__waRuntime', { configurable: true, get: () => runtime })
     }
 
+    // 「有没有页面」以 runtime 的视图为准：view.tag === null ⇔ 没有渲染子 WC（渲染区空态 → 欢迎页）。
+    // 不能用 navigate 事件代替 —— 那只是「发生过导航」：页面加载失败也不回退，且再也回不到空态。
+    runtime.on('view', (view) => {
+      currentTag.value = view.tag
+    })
     runtime.on('navigate', ({ location, route, source, canGoBack: back }) => {
       title.value = route.title ?? route.tag
-      hasPage.value = true
       canGoBack.value = back
       options.onPageChange?.({
         tag: route.tag,
@@ -180,6 +207,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
       if (!mountEl.value) throw new Error('渲染容器未就绪')
       await runtime.init(mountEl.value)
       routes.value = runtime.routes
+      manifestSettled.value = true
     } catch (cause) {
       const info: RuntimeErrorInfo = {
         message: `runtime 初始化失败：${(cause as Error).message}`,
@@ -187,6 +215,8 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
       }
       error.value = info
       options.onError?.(info)
+      // 失败也算 settle：否则欢迎页会永远停在「加载中」而不是给出空态提示
+      manifestSettled.value = true
     }
   })
 
@@ -202,6 +232,8 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     mountEl,
     title,
     hasPage,
+    currentTag,
+    manifestSettled,
     canGoBack,
     status,
     error,

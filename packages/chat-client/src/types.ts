@@ -1,7 +1,10 @@
 // chat-client 的对外类型。
 // 运行时契约（manifest / SSE / page-event）来自 @webassistant/protocol，
 // runtime 相关类型来自 @webassistant/wc-runtime-vue/host —— 宿主不需要感知 core。
-import type { PageEventPayload } from '@webassistant/protocol'
+import type { Component } from 'vue'
+import type { PageEventPayload, WelcomeCapability, WelcomePayload } from '@webassistant/protocol'
+// 欢迎页（渲染区空态）的类型与逻辑同源：Variant 定义在 lib/welcome.ts（纯逻辑、可单测），这里转出给宿主。
+import type { WelcomeVariant } from './lib/welcome.js'
 import type {
   NavigationSource,
   RuntimeErrorInfo,
@@ -58,6 +61,58 @@ export interface WebAssistantProps {
   showActivityLog?: boolean
   /** 调试模式：每条活动打 console.debug，并暴露 globalThis.__waActivities / __waRuntime 供控制台排查 */
   debug?: boolean
+  /**
+   * 首屏是否自动打开页面。默认 **不打开** → 渲染区展示「欢迎页」（欢迎语 + 能力卡片）。
+   * - `true`：自动打开 manifest 的第一个页面
+   * - 字符串：自动打开指定 tag 的页面
+   */
+  initialPage?: boolean | string
+  /**
+   * 渲染区「欢迎页」覆盖。欢迎页 = runtime 当前没有页面（没有渲染子 WC）时渲染区的默认内容。
+   * - 缺省（不传）= 内置 `WelcomePage`：渲染 agent 下发的欢迎语 + 能力卡片
+   * - 传组件 = 用宿主组件替换（组件会收到 `text` / `capabilities` / `loading` 三个 prop）
+   * - `false` = 关闭欢迎页（退回最小空态）
+   *
+   * 模板式宿主也可用 `#welcome` 具名插槽（插槽优先于本 prop，可拿到合并后的欢迎页状态）。
+   */
+  welcome?: WelcomeOverride
+}
+
+/**
+ * 渲染区「欢迎页」覆盖值。
+ *
+ * 实现说明：除了 `Component`，这里还显式带上 `object | Function` —— 这是给 Vue 编译器的
+ * **运行时 prop 类型推断**兜底。只写 `Component | false` 时编译器推断不出 `Component`，
+ * 运行时 prop 类型会退化成 `{ type: Boolean }`，宿主传组件就会触发 prop 类型告警。
+ */
+export type WelcomeOverride = Component | object | ((...args: never[]) => unknown) | false
+
+/** 内置欢迎页（WelcomePage.vue）的 props —— 宿主自定义覆盖组件时按同名字段接收。 */
+export interface WelcomePageProps {
+  /** 欢迎语正文（可含换行）；缺省用内置默认问候 */
+  text?: string
+  /** 能力清单（agent 从 manifest 派生；旧服务端用本地 manifest 路由兜底） */
+  capabilities?: WelcomeCapability[]
+  /**
+   * 欢迎内容是否仍在等数据源（握手载荷 / 本地 manifest 都没就绪）。
+   * 注意：不是「对话中」——那是 ChatPanel 的 loading。
+   */
+  loading?: boolean
+}
+
+/**
+ * `#welcome` 具名插槽的入参：**合并后**的欢迎页状态，模板宿主不必自己再判空/合并。
+ * 同时保留 `welcome`（原始载荷）与 `routes`（本地 manifest 路由）供宿主自由发挥。
+ */
+export interface WelcomePageSlotProps extends WelcomePageProps {
+  /** agent 握手下发的原始欢迎载荷（未合并；null = 未下发 / 未连接 / WELCOME_ENABLED=0） */
+  welcome: WelcomePayload | null
+  /** 本地 manifest 路由（能力清单兜底依据） */
+  routes: readonly RuntimeRoute[]
+  /** runtime 当前页 tag；null = 没有渲染子 WC（渲染区空态 → 欢迎页可见） */
+  currentTag: string | null
+  /** 渲染区当前应呈现的内容类型：`page` / `welcome-loading` / `welcome` */
+  variant: WelcomeVariant
 }
 
 /**
@@ -108,6 +163,14 @@ export interface WebAssistantThemeVars {
   '--wa-log-muted'?: string
   /** 执行监视面板边框/分隔色（默认 #374151） */
   '--wa-log-border'?: string
+  /** 错误提示边框色（渲染区错误横幅，默认 #fecaca） */
+  '--wa-error-border'?: string
+  /** 错误提示背景色（渲染区错误横幅，默认 #fef2f2） */
+  '--wa-error-bg'?: string
+  /** 错误提示文字色（渲染区错误横幅，默认 #b91c1c） */
+  '--wa-error-text'?: string
 }
 
 export type { PageEventPayload, RuntimeErrorInfo, RuntimeRoute, RuntimeServices, RuntimeStatus }
+export type { WelcomeCapability, WelcomePayload }
+export type { WelcomeVariant }

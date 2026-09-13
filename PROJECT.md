@@ -106,6 +106,7 @@ webassistant/
     │   └── src/
     │       ├── index.ts          # CLI：wc-analyze --config <wc.pages.json> [--out] [--tsconfig] [--env-file] [--ai-cache] [--no-ai]
     │       ├── analyze.ts         # 组装 manifest v2（命名规则来自 protocol）
+    │       ├── rules.ts           # 规则收集：wc.pages.json 的 rules 声明 → manifest.rules（analyzer 与插件共用）
     │       ├── parseComponent.ts  # @vue/compiler-sfc 切块 + babel(typescript) 解析 props/emits/描述
     │       ├── typeResolver.ts    # vue-tsc 内核：跨文件类型解析，签名里的自定义类型展开成字段结构
     │       └── ai.ts              # AI 语义分析（DeepSeek → description/keywords/exampleQueries，缓存+兜底）
@@ -121,14 +122,18 @@ webassistant/
         ├── vite.config.ts        # SPA demo（proxy /wc→8080、/api→3000）
         ├── vite.lib.config.ts    # 库构建（external vue；core 无框架依赖，打进库里）
         └── src/
-            ├── index.ts          # 导出 WebAssistant / mountWebAssistant / composables / 类型
-            ├── WebAssistant.vue  # 主组件：只做布局与接线
+            ├── index.ts          # 导出 WebAssistant / WelcomePage / useWelcomePage / mountWebAssistant / 纯逻辑 / 类型
+            ├── WebAssistant.vue  # 主组件：只做布局与接线（渲染区无页面时展示欢迎页，可被宿主覆盖）
             ├── components/ChatPanel.vue
+            ├── components/WelcomePage.vue # 内置欢迎页（默认呈现组件）：text + 能力卡片（#welcome 插槽 / welcome prop 可覆盖）
             ├── composables/
-            │   ├── useRuntimeHost.ts # ★ createHostRuntime + 生命周期，包成响应式状态
-            │   └── useAgentChat.ts   # ★ SSE 对话状态机（流式拼接 + render 回调）
-            ├── lib/agentClient.ts# 类型化 SSE 客户端（AgentEvent 可辨识联合）
-            └── types.ts          # Props / Emits / ChatMessage
+            │   ├── useRuntimeHost.ts # ★ createHostRuntime + 生命周期，包成响应式状态（view.tag → hasPage/currentTag）
+            │   ├── useAgentChat.ts   # ★ 对话状态机（流式拼接 + render 回调 + 欢迎载荷/握手就绪）
+            │   └── useWelcomePage.ts # ★ 欢迎页状态机（空态判定 / 文案 / 能力清单 / 加载态）
+            ├── lib/welcome.ts    # 欢迎页纯逻辑（零依赖、可单测）：默认文案 + variant/loading/合并
+            ├── lib/initialPage.ts# 首屏是否自动打开页面的归一化（缺省不打开 → 先出欢迎页）
+            ├── lib/agentSocket.ts# 类型化 WS 客户端（session / 重连退避 / 心跳 / RPC）
+            └── types.ts          # Props / Emits / ChatMessage / 欢迎页类型 / 主题变量
 ```
 
 ## 五、核心数据流
@@ -271,6 +276,68 @@ ctx.t('key'); ctx.state.user; ctx.nav.push({ tag })
 - `node_modules` 里**软链**进来的 workspace 包（如 `@unicom/ontology-api` → `packages/api`）realpath 不在 `node_modules`，按项目内类型展开。
 - 类型注解偏移会收敛到「起点相同的最外层类型节点」，避免 `Partial<X>` 退化成 `Partial<T>`、`Foo[]` 丢 `[]`。
 - 找不到 `tsconfig.json` / vue 语言插件初始化失败 → 打印 warning 并降级为纯语法解析（自定义类型退化成 `Object`/`Array`），不破坏老宿主。
+
+### 6.7.2 项目规则：wc.pages.json → manifest.rules → prompt
+
+- 被服务项目在 `wc.pages.json` 声明规则文档，**两级**：
+  - **manifest 级**（一波页面一波规则）：顶层 `"rules": ["rules/domain.md", "rules/policies"]`
+  - **页面级**（只在该页面生效）：页面条目里 `{ "name": "DatasourceAdmin", ..., "rules": ["rules/datasource-page.md"] }`
+- 声明值支持：文件路径 / 目录（**自动收集**所有 `.md`，按文件名排序）/ 内联 `{ name, content }`。
+- 规则 Markdown 顶部可选 frontmatter（`name` / `disabled`），字段名对齐 Cline SDK 的 `RuleConfig`（为后续接 skill 留口）。
+- `analyzer/src/rules.ts`（`resolveRuleEntries`）被 analyzer 与 `wcManifestPlugin` **共用**，把正文内联进
+  `manifest.rules: ManifestRule[]` 与 `manifest.pages[].rules`，保证两条生成路径不漂移；未声明时不写字段（避免噪音）。
+- `wcManifestPlugin` 的 dev watch 把规则文件/目录纳入监听，改动即增量重生成；未声明但旧 manifest 有对应 `rules` → 保留旧值
+  （与 `dataSources` 同款「手工字段保留」策略，页面级同样适用）。
+- agent-server：`ManifestService.getRules()` + `buildAgentContext()` 把 manifest 级 `rules` 拼进 system prompt 的
+  「项目规则」段（**优先于通用规则**），页面级 `rules` 拼在「可用页面」列表里对应页面条目下（`页面规则（只在该页面生效）`），
+  两级均跳过 `disabled`；本地 manifest 走 mtime 热重载 / 远程 manifest 走定期刷新 → 改规则无需重启 agent-server。
+
+### 6.7.3 连接欢迎内容：欢迎语 + 欢迎页（session.ready.welcome / chat.text）
+
+- 每次 WS 连接建立（`session.hello`）后，agent-server 下发欢迎内容，介绍「能做什么」，两条通道：
+  - **结构化载荷** `session.ready.welcome = { text, capabilities[] }`：`capabilities` 由
+    `ManifestService.buildWelcome()` 从 manifest 页面派生（`tag / name / title / description / examples`，
+    examples 取 `exampleQueries` / `keywords`）—— **纯数据、零 LLM 成本**；随握手一并下发，顺序天然正确。
+  - **聊天气泡问候** `chat.text` + `chat.done`：内容即 `welcome.text`，用 `setTimeout(0)` 排在 `session.ready` 之后
+    （`session.ready` 是 handler 返回值，Nest 在 return 后同步发送）。
+- 配置：`WELCOME_MESSAGE` 覆盖 `text`（能力清单不变）；`WELCOME_ENABLED=0` 关闭。
+
+#### 欢迎页 = 渲染区空态（没有渲染子 WC）
+
+**定义**：欢迎页不是独立功能，而是「runtime 当前没有页面」时渲染区的默认内容。判据只有一个 —— runtime 的当前页 tag：
+`RuntimeView.tag === null`（新增 `Runtime.hasPage` getter 与之同源，`false` ⇔ 没有渲染任何子 WC）。由此推出的三条约束：
+
+- **「有没有页面」以 runtime 的 `view` 事件为准**（`useRuntimeHost` 订阅后派生 `currentTag` / `hasPage`），
+  **不用 `navigate` 事件**：后者只表示「发生过导航」，页面加载失败也不回退，而且一旦导航过就再也回不到空态。
+- **页面加载失败 ≠ 无页**：错误独立成横幅展示，不再顶掉欢迎页（旧实现里 `v-if="error"` 会把空态整块替换成一行错误文本，
+  而 `hasPage=true` 时错误又完全不可见）。
+- **首屏默认不自动打开页面**（runtime 原本默认打开 manifest 第一个页面）：chat-client 的 `useRuntimeHost` 显式传
+  `initial: null`（见 `lib/initialPage.ts` 的 `resolveInitialTarget`），欢迎页才会先出现；宿主可用 `initialPage`
+  （`true` = 第一个页面 / tag 字符串）恢复或指定首屏页面。
+
+**逻辑对使用者开放**（框架自带默认 + 宿主可覆盖；三层，纯逻辑与呈现解耦）：
+
+| 层 | 文件 | 作用 |
+|---|---|---|
+| 纯逻辑 | `chat-client/lib/welcome.ts` | `DEFAULT_WELCOME_TEXT` + `resolveWelcomeVariant` / `resolveWelcomeLoading` / `resolveWelcomeText` / `resolveWelcomeCapabilities`；零依赖、可单测 |
+| 响应式 | `chat-client/composables/useWelcomePage.ts` | 包成 `{ variant, visible, text, capabilities, loading }`；`useWebAssistant()` 以 `welcomePage` 透出 |
+| 呈现 | `chat-client/components/WelcomePage.vue` | 默认组件（`text` / `capabilities` / `loading` 三个 prop） |
+
+- `variant`：`page`（有页面，渲染区被页面接管）/ `welcome-loading`（无页 + 数据源都没就绪）/ `welcome`。
+- `text` / `capabilities` 已合并：agent 握手下发的载荷优先，**旧服务端未下发时用本地 manifest 路由兜底**
+  （只有 `tag`/`name`/`title`），不依赖新协议也能显示欢迎页。
+- `loading` 语义 = 「欢迎内容是否仍在等数据源」（握手 `session.ready` / manifest 都没 settle；失败也算 settle）
+  —— 不再是「对话中」，因此刷新瞬间不会误显「暂无可操作页面」。
+- 覆盖优先级：`WebAssistant` 的 `#welcome` 插槽 > `welcome` prop（`Component | false`）> 内置 `WelcomePage`；
+  `welcome=false` 回退最小空态。`#welcome` 插槽入参是**合并后的完整状态**
+  （`WelcomePageSlotProps`：`text` / `capabilities` / `loading` / `variant` / `currentTag` + 原始 `welcome` / `routes`），
+  模板宿主不必自己判空与合并。
+- headless 宿主：`useWebAssistant()` 取 `welcomePage` + 导出的 `WelcomePage`（或自己的组件）渲染；
+  `welcome` / `routes` / `currentTag` / `manifestSettled` / `sessionReady` 也一并透出。
+- 容器侧另有「批次内空态」（`defineVueContainer({ renderEmpty })`，默认文案「暂无页面」）：它属于**容器 shadow DOM 内部**，
+  由被服务项目配置（容器 bundle 自带另一份 vue，宿主的 Vue 组件传不进去）；单框架 + 首屏不导航时容器是懒建的、
+  不会触发，宿主级欢迎页不走它。
+- 客户端 `useAgentChat` 在 `chat.done`/`chat.error` 后重置流式游标，使 server 主动推送的消息另起一条气泡。
 
 ### 6.8.1 wcManifestPlugin：可选的 manifest 增量集成（vite-plugin-wc）
 

@@ -6,8 +6,11 @@ import { Agent, fetch as undiciFetch, type Response } from 'undici'
 import type {
   AgentSession,
   ManifestPage,
+  ManifestRule,
   PageObservation,
   RuntimeManifest,
+  WelcomeCapability,
+  WelcomePayload,
 } from '@webassistant/protocol'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
@@ -76,6 +79,56 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     return this.getPages().find((page) => page.tag === tag)
   }
 
+  /** 项目级 agent 规则（随 manifest 下发；一波页面一波规则）。空数组表示该项目未声明规则。 */
+  getRules(): readonly ManifestRule[] {
+    return this.getManifest().rules ?? []
+  }
+
+  /**
+   * 连接建立（session.hello）时的欢迎载荷：介绍 agent「能做什么」。
+   * - `capabilities`：按 manifest 页面派生（纯数据，零 LLM 成本）
+   * - `text`：欢迎语正文，`WELCOME_MESSAGE` 可整段覆盖
+   * - `WELCOME_ENABLED=0`：关闭（返回 null）
+   * 都在调用时读 process.env，便于运行时/测试按需切换。
+   */
+  buildWelcome(): WelcomePayload | null {
+    if (process.env.WELCOME_ENABLED === '0') return null
+    const capabilities: WelcomeCapability[] = this.getPages().map((page) => {
+      const examples = page.exampleQueries?.length
+        ? page.exampleQueries.slice(0, 2)
+        : page.keywords?.slice(0, 3)
+      return {
+        tag: page.tag,
+        name: page.name,
+        ...(page.title ? { title: page.title } : {}),
+        ...(page.description ? { description: page.description } : {}),
+        ...(examples?.length ? { examples } : {}),
+      }
+    })
+    const override = process.env.WELCOME_MESSAGE?.trim()
+    return { text: override || this.buildWelcomeText(capabilities), capabilities }
+  }
+
+  /** 欢迎语正文：默认按能力清单生成（无能力时提示未配置） */
+  private buildWelcomeText(capabilities: readonly WelcomeCapability[]): string {
+    const lines: string[] = [
+      '你好，我是本站的智能助手 👋',
+      '我可以理解你的需求，直接帮你打开并操作对应的页面。',
+    ]
+    if (capabilities.length) {
+      lines.push('', '目前我能帮你：')
+      for (const cap of capabilities) {
+        const label = cap.title || cap.name || cap.tag
+        const hint = cap.examples?.[0]
+        lines.push(`- ${label}${hint ? `（例如：${hint}）` : ''}`)
+      }
+      lines.push('', '直接说出你想做什么就可以了。')
+    } else {
+      lines.push('', '当前还没有配置可操作的页面，请联系管理员。')
+    }
+    return lines.join('\n')
+  }
+
   buildAgentContext(session?: Pick<AgentSession, 'currentPage' | 'pageExposedKeys' | 'recentObservations'>): string {
     const manifest = this.getManifest()
     const lines = ['你是一个网页助手，需要根据用户目标选择并操作页面。', '', '可用页面：']
@@ -114,6 +167,12 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
           lines.push(`  可获取数据：${ds.description || ds.match}${fieldInfo}${pkInfo}`)
         }
       }
+      // 页面级规则：只在该页面生效（随 manifest 下发，跳过 disabled）
+      const pageRules = (page.rules ?? []).filter((rule) => !rule.disabled)
+      if (pageRules.length) {
+        lines.push('  页面规则（只在该页面生效）：')
+        for (const rule of pageRules) lines.push(`    - [${rule.name}] ${rule.instructions}`)
+      }
     }
     lines.push('', '规则：')
     lines.push('1. 页面参数缺失时，先寻找能通过 props 缩小范围的候选页面。')
@@ -124,6 +183,13 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     lines.push('6. call_page_method 成功时 ack 为 { status: "success", value? }（Promise 会等 resolve；非 Promise 立即返回），可作为后续观察/推理的事实依据；失败为 ok:false + error。')
     lines.push('7. 方法签名里出现的参数必须放进 call_page_method 的 args（按签名顺序），缺失会以 undefined 调用而失败；无参数的方法可省略 args。')
     lines.push('   例：call_page_method({ name: "setKeyword", args: ["钱"] })；call_page_method({ name: "save", args: [{ name: "新数据源", host: "127.0.0.1" }] })')
+
+    // 项目规则：随 manifest 下发（wc.pages.json 的 rules 自动收集），优先于上面的通用规则。
+    const projectRules = this.getRules().filter((rule) => !rule.disabled)
+    if (projectRules.length) {
+      lines.push('', '项目规则（来自本项目 manifest，优先于上面的通用规则；冲突时以项目规则为准）：')
+      for (const rule of projectRules) lines.push(`- [${rule.name}] ${rule.instructions}`)
+    }
 
     // 当前页 + 最新 expose 能力（运行时维度）
     if (session?.currentPage) {

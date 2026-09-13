@@ -69,13 +69,16 @@ async function main(): Promise<void> {
   })
   fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
-  console.log(`✓ 生成 ${outPath}（manifest v${manifest.version}，${manifest.pages.length} 个页面）`)
+  console.log(`✓ 生成 ${outPath}（manifest v${manifest.version}，${manifest.pages.length} 个页面，${manifest.rules?.length ?? 0} 条规则）`)
   console.log(`  AI 缓存：${aiCacheFile}`)
   console.log(
     `  AI 环境：${loadedEnvFiles.length ? loadedEnvFiles.join(', ') : '未找到宿主 .env，使用进程环境'}`,
   )
   for (const [framework, container] of Object.entries(manifest.containers)) {
     console.log(`  容器 [${framework}] <${container.tagName}> → ${container.bundle}`)
+  }
+  for (const rule of manifest.rules ?? []) {
+    console.log(`  - 规则 [${rule.name}]${rule.disabled ? '（已禁用）' : ''} ${rule.instructions.split('\n')[0].slice(0, 60)}`)
   }
   for (const page of manifest.pages) {
     console.log(`  - <${page.tag}> ${page.title ?? ''}（${page.path}）→ ${page.bundle}`)
@@ -88,6 +91,9 @@ async function main(): Promise<void> {
       `      exposes: ${page.exposes?.map((m) => `${m.name}${m.signature ?? ''}`).join(' | ') || '(无)'}` +
         `  emits: ${page.emits?.map((e) => `${e.name}${e.payloadType ? `<${e.payloadType}>` : ''}`).join(' | ') || '(无)'}`,
     )
+    if (page.rules?.length) {
+      console.log(`      页面规则: ${page.rules.map((r) => r.name).join(', ')}`)
+    }
   }
 }
 

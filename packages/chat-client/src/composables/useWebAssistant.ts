@@ -11,7 +11,8 @@ import { onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { createAgentSocket, type AgentSocket, type AgentSocketState } from '../lib/agentSocket.js'
 import { useRuntimeHost } from './useRuntimeHost.js'
 import { useAgentChat } from './useAgentChat.js'
-import type { ServerMessage } from '@webassistant/protocol/websocket'
+import { useWelcomePage } from './useWelcomePage.js'
+import type { ServerMessage, WelcomePayload } from '@webassistant/protocol/websocket'
 import { withActivityOrigin, type WcActivity } from '@webassistant/wc-runtime-vue/host'
 import type {
   NavigationResult,
@@ -22,12 +23,18 @@ import type {
   RuntimeStatus,
 } from '@webassistant/wc-runtime-vue/host'
 import type { ChatMessage, PageChangeInfo, PageEventPayload } from '../types.js'
+import type { UseWelcomePageReturn } from './useWelcomePage.js'
 
 export interface UseWebAssistantOptions {
   /** manifest 在 {wcBase}/manifest.json，WC 产物在 {wcBase}/dist-ce（默认 '/wc'） */
   wcBase?: string
   /** WebSocket 地址前缀（默认 '/ws'） */
   wsBase?: string
+  /**
+   * 首屏是否自动打开页面（默认 `false` → 渲染区展示欢迎页）：
+   * `true` = 打开 manifest 第一个页面；字符串 = 打开指定 tag 的页面。
+   */
+  initialPage?: boolean | string
   /** 注入业务 WC 的宿主能力（框架无关：request / t / getToken / theme / state / emit） */
   services?: RuntimeServices
   /** 页面切换回调（原 WebAssistant 的 'page-change' emit） */
@@ -51,6 +58,19 @@ export interface UseWebAssistantReturn {
   wsStatus: Ref<AgentSocketState>
   messages: Ref<ChatMessage[]>
   loading: Ref<boolean>
+  /**
+   * 连接握手时 agent 下发的欢迎载荷（渲染区欢迎页用）。
+   * headless 宿主可直接拿它渲染自己的欢迎页；未下发（旧服务端）时为 null。
+   */
+  welcome: Ref<WelcomePayload | null>
+  /** 是否已收到 `session.ready`（欢迎页据此退出加载态；未就绪显示「加载中」而不是空态提示） */
+  sessionReady: Ref<boolean>
+  /**
+   * 欢迎页状态机：**渲染区空态**（runtime 没有渲染子 WC）时该显示什么。
+   * `variant` / `visible` / `text` / `capabilities` / `loading` —— headless 宿主可直接用它
+   * 配导出的 `WelcomePage`（或自己的组件）渲染，不必自己判空与合并兜底。
+   */
+  welcomePage: UseWelcomePageReturn
   send: (input: string) => void
   cancel: () => void
   reset: () => void
@@ -58,6 +78,10 @@ export interface UseWebAssistantReturn {
   mountEl: Ref<HTMLElement | null>
   pageTitle: Ref<string>
   hasPage: Ref<boolean>
+  /** runtime 当前页 tag；null = 没有渲染子 WC（= `hasPage === false`，渲染区显示欢迎页） */
+  currentTag: Ref<string | null>
+  /** 本地 manifest 是否已 settle（加载成功或失败都算）——欢迎页据此退出加载态 */
+  manifestSettled: Ref<boolean>
   canGoBack: Ref<boolean>
   status: Ref<RuntimeStatus>
   error: Ref<RuntimeErrorInfo | null>
@@ -110,6 +134,8 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     mountEl,
     title: pageTitle,
     hasPage,
+    currentTag,
+    manifestSettled,
     canGoBack,
     status,
     error,
@@ -121,6 +147,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     callPageMethod,
   } = useRuntimeHost({
     wcBase: () => wcBase,
+    initialPage: options.initialPage,
     services: options.services,
     activityLimit: options.activityLimit,
     debug: options.debug,
@@ -164,7 +191,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   })
 
   // ---- 对话状态机 ----
-  const { messages, loading, send, cancel, reset, _handleServerMessage } = useAgentChat({
+  const { messages, loading, welcome, sessionReady, send, cancel, reset, _handleServerMessage } = useAgentChat({
     socket: () => socket.value,
     onRender: async ({ tag, params, props: directProps }) => {
       const result = await navigate({
@@ -186,6 +213,11 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
 
   chatHandle.value = _handleServerMessage
 
+  // ---- 欢迎页 = 渲染区空态（没有渲染子 WC）----
+  // 判定/合并逻辑收敛在 useWelcomePage（纯逻辑在 lib/welcome.ts），内置 WelcomePage 与 headless 宿主共用同一份，
+  // 避免宿主各自抄一遍「什么时候显示 + 文案从哪来 + 能力清单怎么合并」。
+  const welcomePage = useWelcomePage({ welcome, routes, currentTag, sessionReady, manifestSettled })
+
   // debug 模式：暴露 globalThis.__waActivities 给控制台（只读 getter，随组件卸载移除）
   if (options.debug) {
     Object.defineProperty(globalThis, '__waActivities', {
@@ -201,12 +233,17 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     wsStatus,
     messages,
     loading,
+    welcome,
+    sessionReady,
+    welcomePage,
     send,
     cancel,
     reset,
     mountEl,
     pageTitle,
     hasPage,
+    currentTag,
+    manifestSettled,
     canGoBack,
     status,
     error,

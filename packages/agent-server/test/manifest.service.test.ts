@@ -11,6 +11,10 @@ writeFileSync(
   JSON.stringify({
     version: 2,
     containers: {},
+    rules: [
+      { name: 'domain-conventions', instructions: '演示数据不得说成生产数据。' },
+      { name: 'legacy', instructions: '已停用规则。', disabled: true },
+    ],
     pages: [
       {
         tag: 'user-list',
@@ -23,6 +27,11 @@ writeFileSync(
           { name: 'setKeyword', signature: '(keyword: string) => void', description: '设置筛选关键字' },
         ],
         emits: [{ name: 'selection-change', payloadType: 'unknown[]', description: '选中行变化' }],
+        rules: [
+          { name: 'page-rule', instructions: '本页只读，不要调用删除。' },
+          { name: 'page-legacy', instructions: '已停用页面规则。', disabled: true },
+        ],
+        exampleQueries: ['我想看用户列表'],
       },
       {
         tag: 'user-detail',
@@ -99,4 +108,54 @@ test('buildAgentContext：page.emit 观察渲染为 [页面事件]', async () =>
   })
   assert.match(prompt, /\[页面事件\] selection-change/)
   assert.match(prompt, /"id":7/)
+})
+
+test('buildAgentContext：注入 manifest.rules（跳过 disabled）', async () => {
+  const svc = await makeService()
+  assert.equal(svc.getRules().length, 2)
+  const prompt = svc.buildAgentContext()
+  assert.match(prompt, /项目规则（来自本项目 manifest，优先于上面的通用规则；冲突时以项目规则为准）：/)
+  assert.match(prompt, /- \[domain-conventions\] 演示数据不得说成生产数据。/)
+  assert.doesNotMatch(prompt, /已停用规则/, 'disabled 的规则不注入 prompt')
+})
+
+test('buildAgentContext：注入页面级 rules（跳过 disabled）', async () => {
+  const svc = await makeService()
+  const prompt = svc.buildAgentContext()
+  assert.match(prompt, /页面规则（只在该页面生效）：/)
+  assert.match(prompt, /- \[page-rule\] 本页只读，不要调用删除。/)
+  assert.doesNotMatch(prompt, /已停用页面规则/, 'disabled 的页面规则不注入 prompt')
+  const headingCount = (prompt.match(/页面规则（只在该页面生效）：/g) ?? []).length
+  assert.equal(headingCount, 1, '只有声明了规则的页面才有该段')
+})
+
+test('buildWelcome：返回结构化载荷（欢迎语文本 + 能力清单）', async () => {
+  const svc = await makeService()
+  const welcome = svc.buildWelcome()
+  assert.ok(welcome, '默认开启欢迎语')
+  assert.match(welcome.text, /智能助手/)
+  assert.match(welcome.text, /UserList/)
+  // 能力清单来自 manifest 页面（tag / name / 示例说法）
+  assert.deepEqual(welcome.capabilities.map((cap) => cap.tag), ['user-list', 'user-detail'])
+  assert.equal(welcome.capabilities[0].name, 'UserList')
+  assert.deepEqual(welcome.capabilities[0].examples, ['我想看用户列表'])
+  assert.equal(welcome.capabilities[1].examples, undefined, '无 exampleQueries/keywords 时省略 examples')
+})
+
+test('buildWelcome：WELCOME_MESSAGE 覆盖 text（能力清单不变）/ WELCOME_ENABLED=0 关闭', async () => {
+  const svc = await makeService()
+  try {
+    process.env.WELCOME_MESSAGE = '自定义欢迎语'
+    const welcome = svc.buildWelcome()
+    assert.equal(welcome?.text, '自定义欢迎语')
+    assert.equal(welcome?.capabilities.length, 2, '覆盖文案不影响能力清单')
+  } finally {
+    delete process.env.WELCOME_MESSAGE
+  }
+  try {
+    process.env.WELCOME_ENABLED = '0'
+    assert.equal(svc.buildWelcome(), null)
+  } finally {
+    delete process.env.WELCOME_ENABLED
+  }
 })

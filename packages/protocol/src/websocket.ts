@@ -155,6 +155,34 @@ export interface SessionReadyMessage {
   sessionId: string
   resumed: boolean
   manifestVersion: number
+  /**
+   * 连接建立时 agent 下发的欢迎载荷（可选）：
+   * 客户端渲染区「欢迎页」据此展示欢迎语 + 能力卡片。随握手一并下发，顺序天然正确。
+   */
+  welcome?: WelcomePayload
+}
+
+/**
+ * 能力项：agent 能打开的页面（由 agent-server 从 manifest 派生，零 LLM 成本）。
+ * 客户端「欢迎页」渲染成卡片；`tag` 为将来「点击直达」预留。
+ */
+export interface WelcomeCapability {
+  /** 页面自定义元素标签（render 的目标） */
+  tag: string
+  /** 路由名（PascalCase） */
+  name?: string
+  title?: string
+  description?: string
+  /** 示例说法（取自 manifest 的 exampleQueries / keywords） */
+  examples?: string[]
+}
+
+/** 连接建立时 agent 下发的欢迎载荷。 */
+export interface WelcomePayload {
+  /** 欢迎语正文（可含换行） */
+  text: string
+  /** 能力清单（agent 可操作的页面） */
+  capabilities: WelcomeCapability[]
 }
 
 export interface ChatTextMessage {

@@ -334,6 +334,12 @@ export interface Runtime {
   go(delta: number): Promise<NavigationResult>
   readonly canGoBack: boolean
   readonly canGoForward: boolean
+  /**
+   * 是否已有当前页面（渲染区是否已渲染出子 WC）。
+   * `false` 等价于「runtime 没有渲染任何子 WC」→ 宿主应展示渲染区空态（欢迎页）。
+   * 注意区分「导航过」与「有页面」：页面加载失败时仍是 `true`（有当前页，只是状态为 error）。
+   */
+  readonly hasPage: boolean
   readonly view: RuntimeView
   readonly current: NavigationRecord | null
   readonly routes: readonly RuntimeRoute[]

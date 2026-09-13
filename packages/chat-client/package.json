@@ -23,6 +23,7 @@
     "build:lib": "vite build --config vite.lib.config.ts && vue-tsc --declaration --emitDeclarationOnly -p tsconfig.build.json",
     "preview": "vite preview",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs",
     "prepublishOnly": "pnpm build:lib"
   },
   "dependencies": {

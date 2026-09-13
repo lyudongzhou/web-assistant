@@ -20,7 +20,7 @@ import {
   type WcPageEntry,
 } from '@webassistant/protocol'
 import { loadWcPages } from './config.js'
-import { resolveComponentTypes } from '@webassistant/analyzer'
+import { collectConfigRuleWatchPaths, resolveComponentTypes, resolveRuleEntries } from '@webassistant/analyzer'
 import { parseComponent, type ParsedComponent } from '@webassistant/analyzer/parseComponent'
 import {
   applyAiDescriptions,
@@ -122,6 +122,10 @@ function mergeHandcraftedFields(
   if (oldPage.dataSources?.length && !merged.dataSources?.length) {
     merged.dataSources = oldPage.dataSources
   }
+  // rules（页面级）：旧有且新无 → 保留旧（手工字段保留策略）
+  if (oldPage.rules?.length && !merged.rules?.length) {
+    merged.rules = oldPage.rules
+  }
   // meta：合并旧 meta（新字段优先）
   if (oldPage.meta) {
     merged.meta = { ...oldPage.meta, ...merged.meta }
@@ -192,6 +196,8 @@ async function analyzePage(
   const props = applyAiDescriptions(comp.props, ai?.propDescriptions)
   const emits = applyAiDescriptions(comp.events, ai?.emitDescriptions)
   const exposes = applyAiDescriptions(comp.exposes, ai?.methodDescriptions)
+  // 页面级规则（仅该页面生效）
+  const pageRules = resolveRuleEntries(root, page.rules)
 
   return {
     tag,
@@ -210,6 +216,8 @@ async function analyzePage(
     description: ai?.description || comp.description || fallbackDescription(page.title, page.name, comp),
     keywords: ai?.keywords ?? [],
     exampleQueries: ai?.exampleQueries ?? [],
+    // 页面级规则：未声明则不写字段（避免噪音）
+    ...(pageRules.length ? { rules: pageRules } : {}),
   }
 }
 
@@ -295,6 +303,12 @@ export async function generateManifestIncremental(
   }
   if (config.sharedStyles?.length) manifest.styles = { shared: config.sharedStyles }
 
+  // 项目规则（一波页面一波规则）：声明的规则自动收集内联；
+  // 未声明但旧 manifest 有 → 保留旧值（与 dataSources 同款「手工字段保留」策略）。
+  const rules = resolveRuleEntries(root, config.rules)
+  if (rules.length) manifest.rules = rules
+  else if (oldManifest?.rules?.length) manifest.rules = oldManifest.rules
+
   // 写入 manifest.json
   fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
@@ -365,6 +379,7 @@ export function wcManifestPlugin(userOptions: WcManifestOptions = {}): import('v
 
       const configPathAbs = path.resolve(root, options.configPath)
       let currentConfig: (WcPagesConfig & { framework: string }) | null = null
+      let ruleWatchPaths: string[] = []
 
       const reloadConfig = (): void => {
         try {
@@ -375,6 +390,11 @@ export function wcManifestPlugin(userOptions: WcManifestOptions = {}): import('v
             if (fs.existsSync(componentPath)) {
               server.watcher.add(componentPath)
             }
+          }
+          // 重新添加规则文件/目录监听（wc.pages.json 的 rules 声明：manifest 级 + 页面级）
+          ruleWatchPaths = collectConfigRuleWatchPaths(root, currentConfig)
+          for (const rulePath of ruleWatchPaths) {
+            if (fs.existsSync(rulePath)) server.watcher.add(rulePath)
           }
         } catch (err) {
           console.warn('[wc-manifest] Failed to reload wc.pages.json:', err)
@@ -391,11 +411,14 @@ export function wcManifestPlugin(userOptions: WcManifestOptions = {}): import('v
         if (normalized === configPathAbs) {
           reloadConfig()
         }
-        // 组件源码变化（或 wc.pages.json 变化）→ 增量重生成
+        // 组件源码 / 规则文件变化（或 wc.pages.json 变化）→ 增量重生成
         const isComponent = currentConfig?.pages.some(
           (p) => path.resolve(root, p.component) === normalized,
         )
-        if (normalized === configPathAbs || isComponent) {
+        const isRule = ruleWatchPaths.some(
+          (rulePath) => normalized === rulePath || normalized.startsWith(rulePath + path.sep),
+        )
+        if (normalized === configPathAbs || isComponent || isRule) {
           try {
             await generateManifestIncremental(root, options)
             console.log(

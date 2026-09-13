@@ -21,6 +21,7 @@ import {
   type WcPagesConfig,
 } from '@webassistant/protocol'
 import { extractParams, parseComponent, type ParsedComponent } from './parseComponent.js'
+import { resolveRuleEntries } from './rules.js'
 import { createTypeResolver, type TypeResolver } from './typeResolver.js'
 import {
   analyzeWithAI,
@@ -29,6 +30,14 @@ import {
   type AiPageResult,
   type PageFacts,
 } from './ai.js'
+
+// 规则收集（wc.pages.json 的 rules 声明 → manifest.rules）供 analyzer / vite-plugin-wc 共用
+export {
+  resolveRuleEntries,
+  collectRuleWatchPaths,
+  collectConfigRuleWatchPaths,
+  parseRuleMarkdown,
+} from './rules.js'
 
 export interface AnalyzeOptions {
   /** wc.pages.json 的绝对路径 */
@@ -123,6 +132,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
     const props = applyAiDescriptions(comp.props, ai?.propDescriptions)
     const emits = applyAiDescriptions(comp.events, ai?.emitDescriptions)
     const exposes = applyAiDescriptions(comp.exposes, ai?.methodDescriptions)
+    // 页面级规则（仅该页面生效）：自动收集页面条目的 rules 声明
+    const pageRules = resolveRuleEntries(root, page.rules)
 
     pages.push({
       tag,
@@ -143,6 +154,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
       description: ai?.description || comp.description || fallbackDescription(page.title, page.name, comp),
       keywords: ai?.keywords ?? [],
       exampleQueries: ai?.exampleQueries ?? [],
+      // 页面级规则：未声明则不写字段（避免噪音）
+      ...(pageRules.length ? { rules: pageRules } : {}),
     })
   }
 
@@ -157,5 +170,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
     pages,
   }
   if (config.sharedStyles?.length) manifest.styles = { shared: config.sharedStyles }
+  // 项目规则（一波页面一波规则）：自动收集 wc.pages.json 的 rules 声明并内联下发
+  const rules = resolveRuleEntries(root, config.rules)
+  if (rules.length) manifest.rules = rules
   return manifest
 }

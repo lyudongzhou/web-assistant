@@ -2,6 +2,71 @@
 
 基于 NestJS（Fastify）的 Agent 网关服务：提供 HTTP + WebSocket 入口，拉取页面 manifest，并驱动 Cline SDK 完成「对话式 Web 助手」的 Agent 决策与页面操作。
 
+## 项目规则（agent rules）
+
+被服务项目可以在 `wc.pages.json` 里声明 **规则文档**，`manifest.json` 会把它内联（**manifest 级** `rules` /
+**页面级** `pages[].rules`），agent-server 读取后注入 system prompt（manifest 级为「项目规则」段、优先于通用规则；
+页面级拼在对应页面条目下）。**改规则无需重启 agent-server**：本地 manifest 走 mtime 热重载，
+远程 manifest 走 `MANIFEST_REFRESH_INTERVAL_MS` 定期刷新。
+
+```jsonc
+// 项目 wc.pages.json
+{
+  "framework": "vue",
+  "container": "src/ce/container.ts",
+  "rules": ["rules/domain.md", "rules/policies"], // manifest 级：文件或目录（目录自动收集所有 .md）
+  "pages": [
+    { "name": "DatasourceAdmin", "component": "src/pages/DatasourceAdmin.vue",
+      "rules": ["rules/datasource-page.md"] }      // 页面级：只在该页面生效
+  ]
+}
+```
+
+规则文档为 Markdown，顶部可选 frontmatter（`name` 缺省取文件名；`disabled: true` 保留但不注入）：
+
+```md
+---
+name: domain-conventions
+disabled: false
+---
+- 演示数据不得说成生产数据。
+```
+
+生成：`pnpm analyze`（或 `wcManifestPlugin` 的 build/dev 增量）把规则正文写进 `manifest.json`：
+
+```json
+{
+  "version": 2,
+  "rules": [{ "name": "domain-conventions", "instructions": "- 演示数据不得说成生产数据。" }],
+  "pages": [{ "tag": "datasource-admin", "rules": [{ "name": "datasource-admin-guard", "instructions": "- …" }] }]
+}
+```
+
+> 部署要点：规则随 manifest 一起走，**不需要额外挂载** —— 只要被服务项目重新生成 manifest，
+> 本地模式改文件即热更，远程模式等下一次刷新（或重启容器）即可生效。
+
+## 连接欢迎语 / 欢迎页
+
+每次 WebSocket 连接建立（`session.hello`）后，agent 会下发欢迎内容（介绍自己能做什么），两条通道：
+
+1. **结构化载荷** `session.ready.welcome = { text, capabilities[] }`：`capabilities` 由 manifest 页面派生
+   （`tag / name / title / description / examples`）→ 客户端渲染区「欢迎页」据此渲染能力卡片。
+2. **聊天气泡问候** `chat.text` + `chat.done`：内容即 `welcome.text`，并保证排在 `session.ready` 之后。
+
+配置：
+
+- `WELCOME_MESSAGE`：整段覆盖欢迎语 **text**（能力清单不变）。
+- `WELCOME_ENABLED=0`：关闭（载荷不下发、聊天气泡也不再推）。
+- 注意：每次 `session.hello` 都会下发（含断线重连）。
+
+客户端（chat-client）覆盖欢迎页：`<WebAssistant :welcome="MyCustomWelcome">`（换组件）/ `:welcome="false"`（关闭）/
+`#welcome` 具名插槽（入参是**合并后**的欢迎页状态）；headless 宿主用 `useWebAssistant()` 的 `welcomePage` 自行渲染，
+也可复用导出的 `WelcomePage`。
+
+> 客户端「欢迎页」= **渲染区空态**（runtime 没有渲染子 WC，即 `RuntimeView.tag === null`）的默认内容，不是独立功能。
+> 纯逻辑在 `chat-client/lib/welcome.ts`（`resolveWelcomeVariant` / `resolveWelcomeText` /
+> `resolveWelcomeCapabilities` / `resolveWelcomeLoading`），内置组件与宿主自定义共用同一份。详见 PROJECT.md 6.7.3。
+
 ## 容器化运行
 
 镜像为多阶段构建，构建上下文必须是**仓库根目录**（需编译 workspace 依赖 `@webassistant/protocol`）。
@@ -80,6 +145,8 @@ docker run --rm -p 3000:3000 \
 | `OBSERVATION_WAIT_TIMEOUT_MS` | 否 | `10000` | `wait_for_observation` 等待观测的默认超时（也是上限） |
 | `AGENT_RUN_TIMEOUT_MS` | 否 | `60000` | 单轮 agent run 的总时长上限 |
 | `SESSION_TTL_MS` | 否 | `1800000` | session 空闲回收阈值（默认 30 分钟） |
+| `WELCOME_ENABLED` | 否 | `1` | 设为 `0` 关闭连接欢迎内容（`session.ready.welcome` 不下发、也不再推 `chat.text`） |
+| `WELCOME_MESSAGE` | 否 | — | 覆盖欢迎语 **text**（能力清单仍来自 manifest）；缺省按 manifest 页面清单自动生成 |
 
 \* `MANIFEST_URL` 与 `MANIFEST_PATH` 二选一，二者都未配置时容器内会因找不到默认 manifest 而启动失败。
 \* `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`：服务器无法直连公网时必填，见下文「代理」。

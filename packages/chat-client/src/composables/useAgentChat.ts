@@ -3,13 +3,14 @@
 //
 // 通信链路：agentSocket.sendChat → WS → agent-server → AgentService.run()
 //           ← WS ← chat.text / agent.step / tool.call / chat.done / chat.error
-import { ref, type Ref } from 'vue'
+import { ref, shallowRef, type Ref } from 'vue'
 import type {
   ServerMessage,
   ToolResultMessage,
   RenderToolArgs,
   CallPageMethodToolArgs,
   ActivityAckData,
+  WelcomePayload,
 } from '@webassistant/protocol/websocket'
 import type { AgentSocket } from '../lib/agentSocket.js'
 import type { ChatMessage } from '../types.js'
@@ -36,6 +37,13 @@ export interface UseAgentChatOptions {
 export interface UseAgentChatReturn {
   messages: Ref<ChatMessage[]>
   loading: Ref<boolean>
+  /** 连接握手（session.ready）时 agent 下发的欢迎载荷，供渲染区欢迎页使用；未下发时为 null */
+  welcome: Ref<WelcomePayload | null>
+  /**
+   * 是否已收到 `session.ready`（握手完成）。
+   * 欢迎页用它判断「欢迎内容的数据源之一已 settle」——未就绪时显示加载态而不是空态提示。
+   */
+  sessionReady: Ref<boolean>
   /** 发送用户消息（会通过 socket.sendChat 发出） */
   send: (input: string) => void
   /** 取消当前 agent run */
@@ -48,6 +56,9 @@ export interface UseAgentChatReturn {
 export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
   const messages = ref<ChatMessage[]>([])
   const loading = ref(false)
+  const welcome = shallowRef<WelcomePayload | null>(null)
+  /** 是否已收到 `session.ready`（握手完成：欢迎载荷有无都已确定，供欢迎页退出加载态） */
+  const sessionReady = ref(false)
   /** 当前正在流式接收的 assistant 消息下标，-1 表示还没开始 */
   let streamingIndex = -1
 
@@ -62,6 +73,11 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
   function handleServerMessage(message: ServerMessage): void {
     switch (message.t) {
+      case 'session.ready':
+        // 握手时 agent 下发的欢迎载荷（渲染区欢迎页据此渲染能力卡片）
+        welcome.value = message.welcome ?? null
+        sessionReady.value = true
+        break
       case 'chat.text':
         appendAssistant(message.delta)
         break
@@ -73,10 +89,14 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         break
       case 'chat.done':
         loading.value = false
+        // 结束当前流式气泡：下一次 chat.text 另起一条消息
+        // （server 主动推送的欢迎语等在「上一轮结束后」到达，必须另起气泡而不是追加）
+        streamingIndex = -1
         break
       case 'chat.error':
         appendAssistant(`\n[错误] ${message.message}`)
         loading.value = false
+        streamingIndex = -1
         break
     }
   }
@@ -185,5 +205,5 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     loading.value = false
   }
 
-  return { messages, loading, send, cancel, reset, _handleServerMessage: handleServerMessage }
+  return { messages, loading, welcome, sessionReady, send, cancel, reset, _handleServerMessage: handleServerMessage }
 }
