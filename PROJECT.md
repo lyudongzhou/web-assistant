@@ -309,8 +309,9 @@ ctx.t('key'); ctx.state.user; ctx.nav.push({ tag })
 
 - **「有没有页面」以 runtime 的 `view` 事件为准**（`useRuntimeHost` 订阅后派生 `currentTag` / `hasPage`），
   **不用 `navigate` 事件**：后者只表示「发生过导航」，页面加载失败也不回退，而且一旦导航过就再也回不到空态。
-- **页面加载失败 ≠ 无页**：错误独立成横幅展示，不再顶掉欢迎页（旧实现里 `v-if="error"` 会把空态整块替换成一行错误文本，
-  而 `hasPage=true` 时错误又完全不可见）。
+- **页面加载失败 ≠ 无页**：错误独立成横幅展示，不再顶掉欢迎页（旧实现里 `v-if="error"` / `v-else` 让两者互斥，
+  错误一出现欢迎页就消失）。横幅**仅无页时显示**：有页面时页面加载失败由容器渲染 `.wa-runtime-error`，
+  其余运行时错误走 `error` ref / `@error` emit。
 - **首屏默认不自动打开页面**（runtime 原本默认打开 manifest 第一个页面）：chat-client 的 `useRuntimeHost` 显式传
   `initial: null`（见 `lib/initialPage.ts` 的 `resolveInitialTarget`），欢迎页才会先出现；宿主可用 `initialPage`
   （`true` = 第一个页面 / tag 字符串）恢复或指定首屏页面。

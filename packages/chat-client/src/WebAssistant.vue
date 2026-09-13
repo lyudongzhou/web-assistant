@@ -279,7 +279,9 @@ const welcomeSlotProps = computed<WelcomePageSlotProps>(() => ({
   text-align: center;
   line-height: 1.6;
 }
-/* 渲染区错误横幅：与欢迎页解耦（错误不再顶掉欢迎页；有页面时也能看到） */
+/* 渲染区错误横幅：与欢迎页解耦（不再互相顶掉）。
+   注意**仅无页时显示**：有页面时页面加载失败由容器渲染 `.wa-runtime-error`，
+   其余运行时错误走 `error` ref / `@error` emit（程序化面）。 */
 .error-tip {
   width: 100%;
   max-width: 640px;

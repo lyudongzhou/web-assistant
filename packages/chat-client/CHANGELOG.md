@@ -17,8 +17,9 @@
     - `components/WelcomePage.vue`：默认呈现组件（`text` / `capabilities` / `loading`）。
   - **判空改用 runtime 事实**：`useRuntimeHost` 订阅 `view` 事件派生 `currentTag` / `hasPage`，不再用
     `navigate` 事件的粘性布尔（后者只表示「发生过导航」，加载失败不回退，且一旦导航过就再也回不到空态）。
-  - **错误与欢迎页解耦**：错误独立成横幅（新增 `--wa-error-*` 主题变量），不再把空态整块替换成一行错误文本；
-    有页面时错误也不再不可见。
+  - **错误与欢迎页解耦**：错误独立成横幅（新增 `--wa-error-*` 主题变量），不再把空态整块替换成一行错误文本
+    （旧实现里 `v-if="error"` / `v-else` 让两者互斥，错误一出现欢迎页就消失）。横幅**仅无页时显示**；
+    有页面时页面加载失败由容器渲染 `.wa-runtime-error`，其余运行时错误走 `error` ref / `@error` emit。
   - **`loading` 语义修正**：由 `sessionReady` + `manifestSettled` 决定（**失败也算 settle**，不会死转圈），
     不再是「对话中」；刷新瞬间不会误显「暂无可操作页面」。
   - **修复「内置欢迎页永不渲染」**：`welcome` 的运行时 prop 含 `Boolean` 且无 `default` 时，Vue 会把缺省
