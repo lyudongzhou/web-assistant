@@ -100,3 +100,63 @@ export function resolveWelcomeCapabilities(
     ...(route.title ? { title: route.title } : {}),
   }))
 }
+
+/** 缺省 hero 副标题（欢迎语只有一行、或首行之后直接就是列表时使用） */
+export const DEFAULT_HERO_SUBTITLE = '描述你想做什么，我来帮你打开并操作对应的页面'
+
+/** hero 最多展示几行副标题（避免欢迎语异常长时把 hero 撑高） */
+const MAX_SUBTITLE_LINES = 2
+
+/** 列表项标记（`- xxx` / `* xxx` / `1. xxx` / `1、xxx`） */
+const LIST_MARKER = /^(?:[-*•·–—]|\d+[.)、])\s*/
+/** 列表引导句（以冒号结尾，如「目前我能帮你：」）—— 其后的内容交给能力卡片呈现 */
+const LIST_LEAD_IN = /[:：]\s*$/
+
+/** 欢迎页 hero 的文案（已拆好的主/副标题） */
+export interface WelcomeHeroText {
+  /** hero 主标题：欢迎语首行 */
+  headline: string
+  /** hero 副标题：列表开始之前的散文行；没有则回退 `DEFAULT_HERO_SUBTITLE` */
+  subtitle: string
+}
+
+/**
+ * 把欢迎语拆成 hero 主/副标题。
+ *
+ * 为什么要拆：agent 下发的 `text` 其实是一份「文档」，默认长这样 ——
+ *
+ * ```
+ * 你好，我是本站的智能助手 👋              ← 首行 → hero 主标题
+ * 我可以理解你的需求，…                    ← 列表之前的散文 → hero 副标题
+ * （空行）
+ * 目前我能帮你：                          ← 列表引导句（与「我能帮你」标题重复）
+ * - 数据源管理（例如：…）                  ← 能力清单 bullet（与能力卡片重复）
+ * （空行）
+ * 直接说出你想做什么就可以了。
+ * ```
+ *
+ * 能力清单已经渲染成卡片，所以这里**只取「列表之前的那几行散文」**当 hero 主/副标题；
+ * 列表引导句与 bullet 一律丢弃 —— 否则同一份内容会在页面上出现两遍，还会把 hero 撑到几千像素。
+ * （全文仍会作为 assistant 消息出现在对话里，信息不会丢。）
+ */
+export function splitWelcomeText(
+  text: string | null | undefined,
+  fallback: string = DEFAULT_WELCOME_TEXT,
+): WelcomeHeroText {
+  const lines = (text?.trim() || fallback)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+
+  const prose: string[] = []
+  for (const line of lines.slice(1)) {
+    if (LIST_MARKER.test(line) || LIST_LEAD_IN.test(line)) break
+    prose.push(line)
+    if (prose.length >= MAX_SUBTITLE_LINES) break
+  }
+
+  return {
+    headline: lines[0] ?? '',
+    subtitle: prose.length ? prose.join('\n') : DEFAULT_HERO_SUBTITLE,
+  }
+}

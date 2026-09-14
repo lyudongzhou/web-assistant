@@ -14,12 +14,15 @@ export { useWelcomePage } from './composables/useWelcomePage.js'
 export { createAgentSocket, type AgentSocket, type AgentSocketOptions, type AgentSocketState } from './lib/agentSocket.js'
 // 欢迎页（渲染区空态）的纯逻辑：宿主可复用做自定义渲染 / 单测
 export {
+  DEFAULT_HERO_SUBTITLE,
   DEFAULT_WELCOME_TEXT,
   resolveWelcomeCapabilities,
   resolveWelcomeComponent,
   resolveWelcomeLoading,
   resolveWelcomeText,
   resolveWelcomeVariant,
+  splitWelcomeText,
+  type WelcomeHeroText,
   type WelcomeRouteLike,
 } from './lib/welcome.js'
 export { resolveInitialTarget, type InitialTarget } from './lib/initialPage.js'

@@ -15,7 +15,8 @@
     "./style.css": "./dist/style.css"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "dev": "vite",
@@ -29,7 +30,9 @@
   "dependencies": {
     "@webassistant/protocol": "workspace:^",
     "@webassistant/wc-runtime-core": "workspace:^",
-    "@webassistant/wc-runtime-vue": "workspace:^"
+    "@webassistant/wc-runtime-vue": "workspace:^",
+    "gsap": "^3.15.0",
+    "motion-v": "^1.10.3"
   },
   "peerDependencies": {
     "vue": "^3.5.0"

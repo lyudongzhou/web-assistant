@@ -45,8 +45,10 @@
                 :loading="welcomeLoading"
               />
               <template v-else>
-                <p>暂无页面</p>
-                <p class="hint">在左侧对话中描述你想打开的页面<br />页面将在这里渲染</p>
+                <div class="empty-fallback">
+                  <p>暂无页面</p>
+                  <p class="hint">在左侧对话中描述你想打开的页面<br />页面将在这里渲染</p>
+                </div>
               </template>
             </slot>
           </div>
@@ -268,11 +270,20 @@ const welcomeSlotProps = computed<WelcomePageSlotProps>(() => ({
   inset: 0;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  overflow-y: auto;
+  color: var(--wa-text-muted, #9ca3af);
+}
+/* 最小空态（`welcome=false`）自身的居中容器：欢迎页铺满，这里由它负责居中留白 */
+.empty-fallback {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 24px;
-  overflow-y: auto;
-  color: var(--wa-text-muted, #9ca3af);
 }
 .empty .hint {
   font-size: 13px;
@@ -285,7 +296,7 @@ const welcomeSlotProps = computed<WelcomePageSlotProps>(() => ({
 .error-tip {
   width: 100%;
   max-width: 640px;
-  margin: 0 0 16px;
+  margin: 16px auto 0;
   padding: 10px 14px;
   border: 1px solid var(--wa-error-border, #fecaca);
   border-radius: var(--wa-radius, 8px);
