@@ -27,6 +27,20 @@ export type {
 export type { PageEventPayload } from '@webassistant/protocol'
 export type { NetworkObservation, NetworkObserver } from '@webassistant/wc-runtime-core'
 
+// 宿主 store → CE 的快照桥（宿主侧）。**不引入 vue / pinia**：宿主只在需要时用，
+// 不会因为 import 本入口就把 vue 打进自己的产物。
+export {
+  HOST_STORE_KEY_PREFIX,
+  STORE_PATCH_EVENT,
+  applyHostStorePatch,
+  cloneHostState,
+  createHostStorePusher,
+  hostStoreIdFromKey,
+  hostStoreKey,
+  isHostStoreKey,
+} from './hostStore.js'
+export type { HostPiniaLike, HostRuntimeLike, HostStoreLike, StorePusher } from './hostStore.js'
+
 // 「WC 执行监视」：activityBus 是全局单例（Symbol.for + globalThis），
 // 容器 bundle 里的上报与宿主这里的订阅拿到的是同一份状态，因此宿主可以直接读/订阅。
 export {

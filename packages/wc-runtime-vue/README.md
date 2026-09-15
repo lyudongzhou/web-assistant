@@ -78,6 +78,30 @@ export default defineVueContainer({
 > **UI 库与 store 属于「runtime 自有依赖」**：写在这里就随本批次 bundle 构建，和页面共享同一份 chunk。
 > 不要让宿主经 services 传 element-plus / pinia 实例 —— 跨框架副本的响应式与全局组件都会失效。
 
+**宿主 store 的数据怎么给页面 store 用（store 快照桥/镜像）**：宿主 pinia 与批次 pinia 是两个实例、
+两份库副本（连 vue 都是两份），所以"共享同一个实例"不成立；要同一份数据就走快照镜像：
+
+```ts
+// 宿主侧（宿主自己的 pinia）
+import { createHostStorePusher } from '@webassistant/wc-runtime-vue/host'
+const pusher = createHostStorePusher({ getRuntime: () => runtime })  // runtime 来自 useRuntimeHost().runtime / onRuntimeReady / createHostRuntime
+hostPinia.use(pusher.plugin)        // 之后创建的每个 store：创建即推一次，变更即推（自动覆盖，不用逐个字段接线）
+// 没有宿主 app（pinia 插件不生效）或只想桥某几个 store：pusher.push(useAuthStore())
+
+// 批次容器侧
+import { createPinia } from 'pinia'
+import { createStoreMirror, defineVueContainer } from '@webassistant/wc-runtime-vue'
+const mirror = createStoreMirror()   // 可选 { only: ['auth'], twoWay: true }
+export default defineVueContainer({
+  plugins: [createPinia().use(mirror.plugin), ElementPlus],
+  setup(context) { mirror.attach(context) },
+})
+```
+
+页面里 `useAuthStore().token` **一行不用改**就有值（拿到的是镜像值）。边界：只同步可序列化 `$state`
+（getter/action/对象身份不过桥）、默认单向（宿主为真相源）；接口要 token 请另外给 `services.getToken`
+纯函数（容器每次请求现读，比读 store 更干净）。
+
 ### ③ 页面入口（vite-plugin-wc 生成，构建成 `pages/*.js`）
 
 ```js

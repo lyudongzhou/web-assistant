@@ -20,6 +20,27 @@ export {
 } from './context.js'
 export type { RuntimeServicesContext } from './context.js'
 export { apiBus, type ApiReport } from '@webassistant/wc-runtime-core'
+// 宿主 store → CE 的快照桥：宿主侧推手（零 vue 依赖）+ CE 侧镜像（pinia 插件）
+export {
+  HOST_STORE_KEY_PREFIX,
+  STORE_PATCH_EVENT,
+  applyHostStorePatch,
+  cloneHostState,
+  createHostStorePusher,
+  hostStoreIdFromKey,
+  hostStoreKey,
+  isHostStoreKey,
+  type HostPiniaLike,
+  type HostRuntimeLike,
+  type HostStoreLike,
+  type StorePusher,
+} from './hostStore.js'
+export {
+  createStoreMirror,
+  type StoreMirror,
+  type StoreMirrorContext,
+  type StoreMirrorOptions,
+} from './storeMirror.js'
 export {
   createVueRouter,
   createVueRouterBridge,

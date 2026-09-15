@@ -7,7 +7,7 @@
 //   - useRuntimeHost  → 渲染宿主（manifest / 容器 / 路由 / 样式）
 //   - useAgentChat    → 对话状态机（消息 / loading / 流式拼接 / tool.call 分发）
 //   - 本文件          → 把三者接起来，并负责「运行时事件 → socket 转发」的映射
-import { onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch, type Ref, type ShallowRef } from 'vue'
 import { createAgentSocket, type AgentSocket, type AgentSocketState } from '../lib/agentSocket.js'
 import { useRuntimeHost } from './useRuntimeHost.js'
 import { useAgentChat } from './useAgentChat.js'
@@ -17,6 +17,7 @@ import { withActivityOrigin, type WcActivity } from '@webassistant/wc-runtime-vu
 import type {
   NavigationResult,
   NavigationTarget,
+  Runtime,
   RuntimeErrorInfo,
   RuntimeRoute,
   RuntimeServices,
@@ -43,6 +44,11 @@ export interface UseWebAssistantOptions {
   onPageEvent?: (payload: PageEventPayload) => void
   /** 错误回调（原 WebAssistant 的 'error' emit） */
   onError?: (error: RuntimeErrorInfo) => void
+  /**
+   * runtime 就绪回调（init 之后触发一次；runtime 是框架无关 API：setState / setServices / getPageExposed）。
+   * 「宿主 pinia → CE store」的快照桥推手需要它：`createHostStorePusher({ getRuntime: () => runtime })`。
+   */
+  onRuntimeReady?: (runtime: Runtime) => void
   /**
    * 「WC 执行监视」回调：WC 侧发生的活动逐条回调
    * （方法调用 / 导航 / emit / 数据上报 / 网络 / 错误）。与 `activities` 是同一份数据。
@@ -86,6 +92,8 @@ export interface UseWebAssistantReturn {
   status: Ref<RuntimeStatus>
   error: Ref<RuntimeErrorInfo | null>
   routes: Ref<readonly RuntimeRoute[]>
+  /** 宿主侧 runtime 句柄（init 后可用、卸载后回 null）—— 反向推数据/换服务/取页面 expose 用 */
+  runtime: ShallowRef<Runtime | null>
   navigate: (target: NavigationTarget) => Promise<NavigationResult | undefined>
   back: () => void
   callPageMethod: <T = unknown>(name: string, args?: unknown[], page?: string) => Promise<
@@ -145,6 +153,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     navigate,
     back,
     callPageMethod,
+    runtime: hostRuntime,
   } = useRuntimeHost({
     wcBase: () => wcBase,
     initialPage: options.initialPage,
@@ -213,6 +222,15 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
 
   chatHandle.value = _handleServerMessage
 
+  // runtime 就绪回调：宿主据此拿到框架无关句柄（setState / setServices / getPageExposed），
+  // 「宿主 store → CE store」的推手也挂在这里。
+  if (options.onRuntimeReady) {
+    const notify = watch(hostRuntime, (rt) => {
+      if (rt) options.onRuntimeReady?.(rt)
+    }, { immediate: true })
+    onUnmounted(notify)
+  }
+
   // ---- 欢迎页 = 渲染区空态（没有渲染子 WC）----
   // 判定/合并逻辑收敛在 useWelcomePage（纯逻辑在 lib/welcome.ts），内置 WelcomePage 与 headless 宿主共用同一份，
   // 避免宿主各自抄一遍「什么时候显示 + 文案从哪来 + 能力清单怎么合并」。
@@ -248,6 +266,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     status,
     error,
     routes,
+    runtime: hostRuntime,
     activities,
     clearActivities,
     navigate,

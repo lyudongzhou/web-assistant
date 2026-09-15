@@ -97,16 +97,24 @@
     </main>
 
     <!-- 验收台是静态页面，import map 写在 HTML 里（不是运行时注入，不受「模块已开始加载」限制） -->
+    <!-- vue / pinia 用 demo-app 自己的 ESM 产物：验收台要**扮演宿主**（宿主有自己的 vue+pinia 副本），
+         与批次 bundle 里那份完全不同 —— 「宿主 store 与 CE store 不是同一个实例」正是这里要验收的点。 -->
     <script type="importmap">
       {
         "imports": {
           "@webassistant/wc-runtime-core": "/node_modules/@webassistant/wc-runtime-core/dist/index.js",
-          "@webassistant/protocol": "/node_modules/@webassistant/protocol/dist/index.js"
+          "@webassistant/wc-runtime-vue/host": "/node_modules/@webassistant/wc-runtime-vue/dist/host.js",
+          "@webassistant/protocol": "/node_modules/@webassistant/protocol/dist/index.js",
+          "vue": "/node_modules/vue/dist/vue.esm-browser.prod.js",
+          "pinia": "/node_modules/pinia/dist/pinia.esm-browser.prod.js"
         }
       }
     </script>
     <script type="module">
       import { activityBus, createRuntime } from '@webassistant/wc-runtime-core'
+      import { createHostStorePusher } from '@webassistant/wc-runtime-vue/host'
+      import { createApp, ref } from 'vue'
+      import { createPinia, defineStore } from 'pinia'
 
       const bar = document.getElementById('bar')
       const stage = document.getElementById('stage')
@@ -125,6 +133,33 @@
       // { name, args, ok, durationMs, result|error, origin }。点下面的「模拟 call_page_method」即可看到。
       activityBus.on((activity) => log(`activity.${activity.kind}`, activity))
 
+      // ---- 宿主 pinia（真实 Vue + pinia，经 import map 加载）----
+      // 演示「宿主 store → CE 页面 store」的快照桥：
+      //   pusher.plugin 挂在宿主 pinia 上 → 每个 store 变更即 runtime.setState({ 'store:<id>': 快照 })
+      //   CE 侧容器 plugins 里的 createStoreMirror() 把快照 hydrate 进批次 pinia 的同名 store
+      // 两边是**两个实例、两份 vue 副本**（跨副本共享实例的响应式不互通），数据靠快照单向同步。
+      const hostPinia = createPinia()
+      // init 之前 runtime.setState 会抛（runtime 未 active），所以 init 完成后才把句柄塞进来
+      const hostRuntimeHolder = { runtime: null }
+      const pusher = createHostStorePusher({ getRuntime: () => hostRuntimeHolder.runtime })
+      hostPinia.use(pusher.plugin)
+      // 未挂载的宿主 app：只是为了让 pinia 的 use(plugin) 生效（插件要 pending 到 install 才移入 _p）
+      createApp({}).use(hostPinia)
+      const useHostAuthStore = defineStore('auth', () => {
+        const token = ref('')
+        const user = ref(null)
+        function login(payload) {
+          token.value = payload.token
+          user.value = payload.user
+        }
+        function logout() {
+          token.value = ''
+          user.value = null
+        }
+        return { token, user, login, logout }
+      })
+      const hostAuth = useHostAuthStore()
+
       // 宿主注入的「外层依赖」：全部是框架无关的纯函数 / 纯数据
       const runtime = createRuntime({
         manifestUrl: '/manifest.json',
@@ -136,7 +171,8 @@
             return res.json()
           },
           t: (key) => `【${key}】`,
-          getToken: () => 'demo-token',
+          // 接口依赖 store 里的 token：给的是**纯函数**，容器每次请求现读（不是把 store 传进去）
+          getToken: () => hostAuth.token,
           theme: { '--el-color-primary': '#7c3aed' },
           state: { user: { name: '宿主用户' } },
           emit: (event, payload) => log('services.emit', { event, payload }),
@@ -163,10 +199,16 @@
         backBtn.disabled = !canGoBack
       })
       runtime.on('status', (payload) => log('status', payload))
+      // state 桥的快照（宿主 store 推送 / setState 都会落一条）——镜像生效的证据
+      runtime.on('state', (payload) => log('state', payload.keys))
       runtime.on('page-event', (payload) => log('page-event', payload))
       runtime.on('error', (payload) => log('error', payload.message))
 
-      await runtime.init(stage)
+      await runtime.init(stage).then(() => {
+        // init 之后 runtime 才允许 setState：把句柄交给推手，并补推一次初始快照
+        hostRuntimeHolder.runtime = runtime
+        pusher.push(hostAuth)
+      })
 
       for (const route of runtime.routes) {
         const params = route.params.length ? { id: 3 } : undefined
@@ -177,6 +219,15 @@
       button('setState(改名字)', () =>
         runtime.setState({ user: { name: `名字${Math.floor(Math.random() * 100)}` } }),
       )
+      // —— 宿主 pinia → CE store 镜像：改宿主 store，页面里 useAuthStore() 的值会跟着变 ——
+      // 「数据管理页」会显示 store 镜像的 token/用户；点「带 token 请求一次」还能验证请求头
+      button('宿主 store：登录', () =>
+        hostAuth.login({
+          token: `tk-${Date.now().toString(36)}`,
+          user: { name: '宿主用户', role: '管理员' },
+        }),
+      )
+      button('宿主 store：登出', () => hostAuth.logout())
       // 模拟 agent 的 call_page_method：走与 chat-client 完全相同的入口 runtime.getPageExposed()
       button('模拟 call_page_method', async () => {
         const exposed = runtime.getPageExposed()

@@ -1,7 +1,7 @@
 // 渲染宓主：把 runtime 的生命周期与事件包成 Vue 响应式状态。
 // manifest 加载、容器懒建、bundle 动态 import、样式注入、history、params→props 全在 runtime 里，
 // 宿主只需提供一个挂载点 + services。
-import { computed, onMounted, onUnmounted, ref, shallowRef, type Ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, shallowRef, type Ref, type ShallowRef } from 'vue'
 import { createHostRuntime } from '@webassistant/wc-runtime-vue/host'
 import {
   activityBus,
@@ -83,6 +83,19 @@ export interface UseRuntimeHostReturn {
   currentPageExposedTag: Ref<string | null>
   navigate: (target: NavigationTarget) => Promise<NavigationResult | undefined>
   back: () => void
+  /**
+   * 宿主侧 runtime 实例（`init` 之后可用，卸载后回到 null）。
+   *
+   * 宿主需要「反向推数据给页面」时用它 —— 都是 runtime 的框架无关 API：
+   * ```ts
+   * runtime.value?.setState({ user: { name: '张三' } })      // 业务状态快照（页面 context.state 响应式跟上）
+   * runtime.value?.setServices({ getToken })                // 中途换/补宿主能力
+   * runtime.value?.getPageExposed()                         // 当前页 defineExpose 的方法
+   * ```
+   * 「宿主 pinia → CE 页面 store」的快照桥推手也接它：
+   * `createHostStorePusher({ getRuntime: () => runtime.value })`（见 @webassistant/wc-runtime-vue/host）。
+   */
+  runtime: ShallowRef<Runtime | null>
   setState: (patch: Record<string, unknown>) => void
   setServices: (patch: Partial<RuntimeServices>) => void
   /**
@@ -128,6 +141,8 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
   }
 
   let runtime: Runtime | null = null
+  /** 给宿主的 runtime 句柄（init 后可用、卸载后回 null） */
+  const runtimeRef = shallowRef<Runtime | null>(null)
 
   onMounted(async () => {
     const base = options.wcBase()
@@ -148,6 +163,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
       services: options.services,
       initial,
     })
+    runtimeRef.value = runtime
 
     // 调试模式：把 runtime 交给控制台（与容器同一条 getPageExposed 入口，便于手动触发一次调用）
     if (options.debug) {
@@ -226,6 +242,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     if (options.debug) Reflect.deleteProperty(globalThis, '__waRuntime')
     runtime?.dispose()
     runtime = null
+    runtimeRef.value = null
   })
 
   return {
@@ -242,6 +259,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     currentPageExposedTag,
     navigate: (target) => Promise.resolve(runtime?.navigate(target)),
     back: () => void runtime?.back(),
+    runtime: runtimeRef,
     setState: (patch) => runtime?.setState(patch),
     setServices: (patch) => runtime?.setServices(patch),
     activities,

@@ -10,12 +10,13 @@
 
 ```
 ┌───────────────────────────── 容器 batch（随你项目构建）─────────────────────────────┐
-│  store(pinia)   router(桥)   axios(实例+拦截器)   element-plus   tailwind(css)        │
+│  store(pinia)   store 镜像   router(桥)   axios(实例+拦截器)   element-plus   tailwind(css) │
 │        ↓ app.use / provide / setHttp           ↓ shadowStyles / plugins              │
 │                                    页面 WC（同批构建，共享同一实例/chunk）              │
 └─────────────────────────────────────────────────────────────────────────────────────┘
              ↑ services 注入（宿主侧纯函数/纯数据，禁止传框架实例）
 宿主项目 <WebAssistant :services="{ request, t, getToken, state, reportApiData }" />
+             ↑ 宿主 store 数据：快照桥（store 镜像）/ setState / getToken（见 4.6）
 ```
 
 **两条铁律**：
@@ -25,7 +26,8 @@
 | **runtime 自有依赖**（框架实例） | 容器里 `app.use` / `provide` / `setHttp` | pinia、vue-router、axios、element-plus、tailwind css |
 | **外层传入依赖**（宿主能力） | `services` 注入，**必须框架无关** | `request`、`t`、`getToken`、`state`、`emit`、`reportApiData` |
 
-禁止传：pinia store 实例、vue-i18n 实例、axios 实例给 services。它们有自己的容器注入通道。
+禁止传：pinia store 实例、vue-i18n 实例、axios 实例给 services。它们有自己的容器注入通道，
+要"同一份数据"用 store 快照桥（4.6）—— 宿主 pinia 与批次 pinia 永远是两个实例。
 
 ---
 
@@ -100,15 +102,14 @@ export default defineVueContainer({
   // ④ axios：setup 只调一次。接管 http，老代码 `import http` 无需改动
   setup(context) {
     setHttp(httpClient as unknown as RequestFn)
-    // 可读宿主注入的 getToken 等，给拦截器拼请求头
-    const getToken = context.services.getToken
-    if (typeof getToken === 'function') {
-      httpClient.interceptors.request.use((config) => {
-        const token = getToken()
-        if (token) (config.headers as Record<string, string>).Authorization = `Bearer ${token}`
-        return config
-      })
-    }
+    // 宿主 token → 请求头。⚠️ 必须在**每次请求时**现读 context.services.getToken：
+    // context.services 是 getter（→ servicesRef.current），把它捕获成局部变量后，
+    // 宿主「登录后才 setServices({ getToken })」或「中途换实现」都拿不到（stale 捕获）。
+    httpClient.interceptors.request.use((config) => {
+      const token = context.services.getToken?.()
+      if (token) (config.headers as Record<string, string>).Authorization = `Bearer ${token}`
+      return config
+    })
   },
 
   // ⑤ 其它：自定义 provide / 逐 app 钩子
@@ -124,9 +125,10 @@ export default defineVueContainer({
 
 ### 4.1 store（pinia）
 
-- **容器**：`plugins: [createPinia()]`，与页面同批构建 → 单实例。
+- **容器**：`plugins: [createPinia()]`，与页面同批构建 → 单实例（整批页面共享）。
 - **页面**：`import { useUserStore } from '../stores/userStore'`，`defineStore` 照常写。
 - **不要**通过 services 传 pinia 实例（跨 bundle 副本不互通，违反框架无关约束）。
+- **宿主 store 的数据怎么进页面** → 见 [4.6 宿主 store 里的数据怎么进 CE](#46-宿主-store-里的数据怎么进-ce)。
 - **联动 agent**：store 状态不会自动同步给 agent；要让 agent 看到，用 `apiBus.report()` 显式上报。
 
 ```ts
@@ -199,6 +201,52 @@ httpClient.interceptors.response.use(
 - **页面零感知**：老代码 `import http from '../utils/request'` 一行不改，实际走 axios；拦截器统一上报，页面**不需要**手动调 `apiBus.report()`（demo-app 里 UserList/UserDetail 已去掉手动上报）。
 - **⚠️ 容器 setHttp 要包一层取 .data**：axios 实例被当函数调用返回 `AxiosResponse`（`{data,status,...}`），而 `http()` 契约要裸数据（fetch 返回 `res.json()`）。容器 `setup` 里必须包成 `(url, init) => httpClient.request({...}).then(r => r.data)` 再交给 `setHttp`，否则表格/列表拿到的是 AxiosResponse 对象而非数组，数据"填不进"。
 
+### 4.6 宿主 store 里的数据怎么进 CE
+
+**前提认知**：宿主 pinia 与批次 pinia 是**两个实例、两份库副本**，而且宿主与批次各有一份 vue。
+
+| 隔离层 | 事实 |
+|---|---|
+| 实例 | 两个 `createPinia()`：宿主 app 一个，批次容器插件里一个（整批页面共享） |
+| 库副本 | 宿主产物里的 pinia 与 `dist-ce/**` 里的 pinia 是两份独立模块（各自 bundle） |
+| 注入符号 | `piniaSymbol = Symbol('pinia')` 每个副本一个，`inject` 只认自己副本的 |
+| 全局 activePinia | 模块级变量，每副本一份；`useStore()` 在 setup 外各自解析 |
+
+结论：**`hostStore === ceStore` 永远不成立**。想让"同一份数据"两边都能用，走下面三条通道（按用途选）；不要试图把 pinia 实例传进 services（`wc-runtime-core/src/services.ts` 会直接告警）。
+
+```ts
+// ❌ 反例：宿主把 store 实例当服务传进去
+<WebAssistant :services="{ userStore }" />
+// 表现：页面首次能读到值，之后宿主改了页面不更新（响应式依赖收集跨副本不互通）
+```
+
+| 用途 | 通道 | 怎么写 |
+|---|---|---|
+| **接口要用宿主 store 里的 token** | `services.getToken`（纯函数，按需现读） | 宿主 `getToken: () => authStore.token`；容器拦截器里每次请求 `context.services.getToken?.()`（见 4.5 的写法） |
+| 页面上要"随登录态变化"的少量数据 | 快照 `runtime.setState` | 宿主 `watch(() => ({ user: authStore.user }), (p) => runtime.setState(p), { deep: true, immediate: true })`；页面 `useRuntimeServices().state.user`（容器侧是浅响应式副本，会跟着变） |
+| **老页面就是写了 `useAuthStore().token`，一个字段都不想改** | **store 快照桥（镜像）** | 宿主 `hostPinia.use(createHostStorePusher({ getRuntime: () => runtime }).plugin)`；容器 `plugins: [createPinia().use(createStoreMirror().plugin)]` + `setup: (ctx) => mirror.attach(ctx)` |
+
+**store 快照桥（镜像）怎么工作**（demo：`packages/demo-app/src/ce/container.ts`、`packages/chat-client/src/main.ts`、`wc-demo.html`）：
+
+```
+宿主 pinia（每个 store 创建时自动挂钩）                    批次 pinia（每个 store 创建时自动挂钩）
+createHostStorePusher(...).plugin                          createStoreMirror().plugin
+   ├─ 首次：推 $state 快照                                    ├─ 首次：从快照 hydrate（$patch）
+   └─ $subscribe：变更即推                                    └─ watch state：宿主再推就再 hydrate
+        runtime.setState({ 'store:auth': {...} })  ──state 桥──▶ context.state['store:auth']
+```
+
+- **页面代码零改动**：`const auth = useAuthStore(); auth.token` 照旧。
+- **自动覆盖所有 store**，不用逐个 store/字段接线（靠 pinia 公开的插件 API，不碰内部字段）。
+- 宿主侧两种接入：`hostPinia.use(pusher.plugin)`（推荐）；或 `pusher.push(store)` 手动桥某几个（宿主没把 pinia 装到 app 上时插件不生效 —— pinia 插件要 install 后才移入 `_p`）。
+- 推手要一个 runtime 句柄：`<WebAssistant>` 用 `onRuntimeReady`、`mountWebAssistant(...)` 用 `onRuntimeReady`、headless 用 `useWebAssistant().runtime` / `useRuntimeHost().runtime`（都是框架无关 API）。
+- **边界**（必须知道，否则会踩坑）：
+  - 只同步可序列化 `$state`；**getter（computed）不在 `$state` 里**（要用就在页面自己算，或让宿主把派生值也放进 state）。
+  - 不是同一个对象：`ceStore.user !== hostStore.user`；action 不过桥（要触发宿主行为用 `context.emit(...)`）。
+  - 宿主每次推送必须是**新对象**（推手已帮你深拷贝纯数据）：state 桥用 `Object.is` 判等，推同一个引用会被当成"没变化"。
+  - 默认单向（宿主为真相源）。要双向：`createStoreMirror({ twoWay: true })` + 宿主 `services.emit` 里 `if (event === STORE_PATCH_EVENT) applyHostStorePatch(authStore, payload)`。
+- **真的想"共用同一个实例"？** 前提是连 vue 一起共享：CE 构建 `external: ['vue','vue-router','pinia','element-plus']` + 宿主用 import map 指向同一份 URL。代价是页面 bundle 不再自包含（不能独立验收/独立部署、版本被宿主锁死、多宿主共存冲突），一般不值得。
+
 ---
 
 ## 5. services（宿主注入，框架无关边界）
@@ -245,6 +293,10 @@ httpClient.interceptors.response.use(
 | 页面 class 不生效 | tailwind 插件 content 没扫到该目录；或产物没重新 build |
 | 报"两个同名但无关的 Plugin 类型" | vite 多实例，根 `pnpm-workspace.yaml` overrides 锁 `"vite": ^6.0.7` |
 | 页面用不了 pinia | 容器没 `plugins: [createPinia()]`；页面在 SPA 模式也要 `.use(createPinia())` |
+| 宿主登录后，页面里 `useAuthStore().token` 还是空 | 宿主 store 与批次 store 是两个实例（不共享）；按 4.6 接 store 快照桥，或让页面用 `services.getToken` / `context.state` |
+| 接口请求头里没有宿主 token | 容器拦截器把 `getToken` **捕获成了局部变量**（stale 捕获）。改成每次请求现读 `context.services.getToken?.()`（见 4.5） |
+| 页面 store 值"首次能读、之后不更新" | 跨副本传了宿主的响应式实例（pinia store / ref）。改走 store 快照桥或 `runtime.setState` 快照 |
+| 宿主改了 store，页面没动 | 推的是同一个对象引用（state 桥用 `Object.is` 判等 → 认为没变化）；每次推**新对象**（`cloneHostState` 已处理） |
 | axios 请求没上报 agent | 拦截器没装；或 manifest 该页面没声明 `dataSources`（白名单过滤） |
 | el-select 下拉样式错乱 | 容器缺 `lightDomStyles`（浮层 teleport 到 body 的补丁） |
 | 页面里 `useRoute()` 拿不到参数 | 用 `defineProps` 的 `id` prop（runtime 会把 params 归一为 prop） |

@@ -35,6 +35,13 @@ function handleApi(req, res) {
   const url = new URL(req.url, 'http://localhost')
   const path = url.pathname
 
+  // GET /api/whoami —— 回显请求头里的 Authorization
+  // 用来验证「宿主 store 的 token → CE 请求头」链路（容器 setup 里 axios 拦截器现读 services.getToken）
+  if (path === '/api/whoami' && req.method === 'GET') {
+    json(res, { authorization: req.headers.authorization ?? null, at: Date.now() })
+    return true
+  }
+
   // GET /api/users  —— 可选 ?name=xxx 过滤
   if (path === '/api/users' && req.method === 'GET') {
     const name = url.searchParams.get('name')

@@ -379,6 +379,21 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
   业务状态走 `runtime.setState()` 快照单向同步，页面变更用 `services.emit` 回传宿主。
 - store 两层：**实现**（pinia 实例）写在批次容器入口的 `plugins`，整批页面共享同一 store；
   **数据**（宿主状态）走 `services.state` + `setState` 快照。
+- **宿主 pinia ≠ 批次 pinia**（四层隔离，显式契约）：①两个 `createPinia()` 实例；②pinia 库是两份独立
+  模块副本（宿主产物 vs `dist-ce/**`）；③`piniaSymbol` 每副本一个，`inject` 只认自己副本的；
+  ④模块级 `activePinia` 每副本一份。因此 `hostStore === ceStore` 永远不成立，同名 store id 在两边
+  各存一份 → 也让"宿主与批次共享同一个 pinia 实例"在**不共享 vue 副本**时不可能生效
+  （pinia 的 ref/computed 由创建它的那份 vue 实现，依赖收集跨副本不互通）。
+  - 要让"宿主 store 的数据给页面 store 用"：走 **store 快照桥（镜像）** ——
+    宿主 `createHostStorePusher({ getRuntime }).plugin` 挂宿主 pinia（每个 store 创建/变更即推
+    `store:<id>` 快照）→ CE 容器 `createStoreMirror().plugin` + `mirror.attach(context)` 按 store id
+    hydrate 进批次 pinia。页面代码零改动，仍是**同一份数据、两个 store 对象**。
+    边界：只同步可序列化 `$state`（getter/action/对象身份不过桥）；默认单向。
+  - 接口依赖宿主 store 里的 token：**不要**传 store，给纯函数 `services.getToken`；
+    容器拦截器每次请求现读 `context.services.getToken?.()`（捕获成局部变量会 stale）。
+  - **跨构建不得去重**：给 CE 构建加 `external: ['vue','pinia']` + import map 会让两侧共用同一份
+    运行时（唯一能让"同一个实例"成立的路），但页面 bundle 不再自包含（失去独立验收/独立部署、
+    版本与宿主强耦合、多宿主共存冲突）。
 - 页面 `useRouter().push()` 与 agent `navigate()` 汇入同一真相源，靠 vue-router 桥的三个机制：
   路由表同步（哑组件 + addRoute）、guard 前移（core guard 挂 `beforeEach`）、
   防回环（`applying` **计数器**，因 vue-router 导航是异步的，布尔 flag 会被并发打穿）。
@@ -398,7 +413,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | easyAutoI18nPlugin cleanup 污染词条 | CE 构建删掉主应用其它页面的 key | `localesDir` 指向临时目录 + `targetLangs: []` |
 | `customElements.define` 不可注销 | 元素定义全局唯一，闭包捕获的 router 被「焊死」，第二个 runtime 实例失效 | 容器 provide + 页面 CE 继承（每实例一份）；`dispose()` 语义定为「解绑 + 卸载 DOM」而非回收定义 |
 | CE 的对象 props 传不进去 | 用 attribute 传对象变成 `[object Object]` | 一律走 DOM property（容器渲染时给 props 加 `.` 前缀）；未升级元素上的赋值由 Vue `_resolveProps` 在 connect 时回收 |
-| 宿主响应式实例跨副本失效 | 传入宿主 pinia/i18n 实例后页面「首次能读、之后不更新」 | 外层依赖只传纯函数/纯数据；业务状态走 `setState` 快照 + 容器侧 `shallowReactive` 副本 |
+| 宿主响应式实例跨副本失效 | 传入宿主 pinia/i18n 实例后页面「首次能读、之后不更新」 | 外层依赖只传纯函数/纯数据；业务状态走 `setState` 快照 + 容器侧 `shallowReactive` 副本；宿主 store 数据走 store 快照桥（宿主 `createHostStorePusher` + 容器 `createStoreMirror`，自动覆盖所有 store 且页面零改动） |
 | vue-router 误判 isBrowser | Node 里给了 `document` 桩后 memory history 报 `history is not defined` | 单测里先 import 依赖 vue-router 的模块，之后再装 DOM 桩 |
 | analyzer 解析不了 TS 页面 | 页面改 `<script setup lang="ts">` 后 babel 直接抛错 | `@vue/compiler-sfc` 切块拿 `block.lang`，babel 按需开 `plugins: ['typescript']` |
 | TS 化后 manifest 丢 prop 类型 | `Array as PropType<User[]>` 让 `type` 解析成 `Any` | 解析时剥掉 `TSAsExpression` 再取构造器名；且**页面保留运行时 `defineProps({})` 写法**（类型写法拿不到注释里的 description） |

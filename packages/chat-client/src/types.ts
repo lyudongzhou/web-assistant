@@ -7,6 +7,7 @@ import type { PageEventPayload, WelcomeCapability, WelcomePayload } from '@webas
 import type { WelcomeVariant } from './lib/welcome.js'
 import type {
   NavigationSource,
+  Runtime,
   RuntimeErrorInfo,
   RuntimeRoute,
   RuntimeServices,
@@ -52,6 +53,17 @@ export interface WebAssistantProps {
   subtitle?: string
   placeholder?: string
   showBackButton?: boolean
+  /**
+   * runtime 就绪回调（init 之后触发一次）。runtime 是**框架无关 API**，宿主可据此反向推数据：
+   * ```ts
+   * onRuntimeReady: (rt) => {
+   *   rt.setState({ user: { name: '张三' } })                       // 业务状态快照（页面 context.state 跟上）
+   *   rt.setServices({ getToken: () => authStore.token })            // 中途补宿主能力
+   *   hostPinia.use(createHostStorePusher({ getRuntime: () => rt }).plugin)  // 宿主 store → CE store 桥
+   * }
+   * ```
+   */
+  onRuntimeReady?: (runtime: Runtime) => void
   /** 把页面 emit 回传给 agent（POST {agentBase}/event）；MVP 默认关闭，避免打扰 agent */
   forwardPageEvents?: boolean
   /**
@@ -171,6 +183,6 @@ export interface WebAssistantThemeVars {
   '--wa-error-text'?: string
 }
 
-export type { PageEventPayload, RuntimeErrorInfo, RuntimeRoute, RuntimeServices, RuntimeStatus }
+export type { PageEventPayload, Runtime, RuntimeErrorInfo, RuntimeRoute, RuntimeServices, RuntimeStatus }
 export type { WelcomeCapability, WelcomePayload }
 export type { WelcomeVariant }

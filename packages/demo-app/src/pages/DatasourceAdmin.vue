@@ -2,6 +2,28 @@
   <!-- @description 数据源管理页，用类型写法声明 props/emits，支持保存、刷新与提交新建数据源 -->
   <div id="cssinjs-probe" class="cssinjs-probe-p1 cssinjs-probe-direct" style="padding: 16px;">
     <h2 style="margin: 0 0 16px; font-size: 18px;">数据源管理</h2>
+    <!-- 宿主 store 镜像：页面代码零改动读 pinia（值由宿主推来）——见 src/ce/container.ts 的 createStoreMirror -->
+    <div
+      style="
+        margin: 0 0 12px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        background: rgb(238, 242, 255);
+        color: rgb(67, 56, 202);
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      "
+    >
+      <span>
+        store 镜像：{{ auth.user?.name ?? '未登录' }}（{{ auth.user?.role ?? '—' }}）· token
+        {{ auth.token ? auth.token.slice(0, 12) + '…' : '（空）' }}
+      </span>
+      <span>· 接口依赖 store 的 token 时看这里：{{ authEcho }}</span>
+      <el-button size="small" @click="whoami">带 token 请求一次 /api/whoami</el-button>
+    </div>
     <el-table :data="rows" border>
       <el-table-column prop="id" label="ID" width="80" />
       <el-table-column prop="name" label="名称" />
@@ -26,10 +48,12 @@
 <script setup lang="ts">
 // 本页刻意使用「类型写法」声明 props / emits，并且类型都来自跨文件 import ——
 // 用来验收 analyzer 的 vue-tsc 内核是否把自定义类型展开成真实字段结构。
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { DatasourceKind } from '../types/datasource'
 import type { DatasourceOwner, DatasourceRequest, DatasourceVO } from '../types/datasource'
 import { injectByAppendChild, injectByInsertRule } from '../vendor/fakeCssInJs'
+import http from '../utils/request'
+import { useAuthStore } from '../stores/authStore'
 
 const props = defineProps<{
   // 外部可注入数据源列表；不传则用内置 mock
@@ -67,6 +91,22 @@ const rows = computed(() => {
   const list = props.sources?.length ? props.sources : mockSources
   return props.onlyEnabled ? list.filter((item) => item.enabled) : list
 })
+
+// —— 宿主 store 镜像示例 ——
+// 页面里就是普通的 `useAuthStore()`：CE 模式下值由宿主推来（容器 createStoreMirror），SPA 模式下是本应用的 store。
+// 本批次 pinia 与宿主 pinia 是**两个实例**（两份 vue 副本），数据靠快照单向同步，不是共享实例。
+const auth = useAuthStore()
+const authEcho = ref('（未请求）')
+
+/** 带 token 请求一次：验证「宿主 store 的 token → 请求头」链路（容器 setup 里的 axios 拦截器按需现读 getToken） */
+async function whoami(): Promise<void> {
+  try {
+    const data = await http<{ authorization: string | null }>('/api/whoami')
+    authEcho.value = data.authorization ?? '（服务端没收到 Authorization）'
+  } catch (cause) {
+    authEcho.value = `请求失败：${(cause as Error).message}`
+  }
+}
 
 /** 保存数据源，返回保存后的完整对象（agent 可据返回值继续规划） */
 async function save(data: DatasourceRequest): Promise<DatasourceVO> {

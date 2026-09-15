@@ -133,6 +133,7 @@ const {
   onPageChange: (info) => emit('page-change', info),
   onPageEvent: (payload) => emit('page-event', payload),
   onError: (info) => emit('error', info),
+  onRuntimeReady: (runtime) => props.onRuntimeReady?.(runtime),
 })
 
 // 欢迎页 = 渲染区空态（runtime 没有渲染子 WC）。状态机在 useWebAssistant 里算好（纯逻辑见 lib/welcome.ts），
