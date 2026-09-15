@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/vite-plugin-wc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "由 wc.pages.json 驱动，把一个 framework 批次的容器 + 页面编译成可被 runtime 动态加载的 bundle",
   "main": "./dist/index.js",
