@@ -1,9 +1,10 @@
 # @webassistant/analyzer
 
-## 0.1.2
+## 0.1.3
 
-> 0.1.1 未能上线：首次发布时 registry 侧残留了该版本的 staged 记录（tarball 未落地、版本号被占），
-> 内容与 0.1.1 完全相同，改以 0.1.2 发布。
+> 前两次都没能真正可安装：**0.1.1** 卡在 registry 侧的 staged 记录（tarball 未落地、版本号被占），
+> **0.1.2** 元数据写入成功但 tarball 丢失（`npm i @webassistant/analyzer@0.1.2` 404）。
+> 内容与 0.1.1 完全相同，改以 0.1.3 发布。
 
 ### Patch Changes
 

@@ -1,5 +1,14 @@
 # @webassistant/chat-client
 
+## 0.4.1
+
+> 0.4.0 的版本元数据已写入 registry，但 tarball 丢失（`npm i @webassistant/chat-client@0.4.0` 返回 404），
+> 内容与 0.4.0 完全相同，改以 0.4.1 发布。
+
+### Patch Changes
+
+- 无代码变更（同 0.4.0，仅重发以修复 registry 侧 tarball 缺失）。
+
 ## 0.4.0
 
 ### Minor Changes
