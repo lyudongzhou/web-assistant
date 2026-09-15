@@ -1,0 +1,265 @@
+{
+  "version": 2,
+  "containers": {},
+  "pages": [
+    {
+      "tag": "user-list",
+      "name": "UserList",
+      "path": "/users",
+      "title": "用户列表",
+      "framework": "vue",
+      "params": [],
+      "props": [
+        {
+          "name": "users",
+          "type": "Array",
+          "description": "外部可注入用户数据；不传则用内置 http 获取（便于独立演示）"
+        },
+        {
+          "name": "keyword",
+          "type": "String",
+          "description": "关键词（agent 通过 props 传入过滤条件）"
+        }
+      ],
+      "events": [
+        "search",
+        "delete",
+        "page-change",
+        "create"
+      ],
+      "emits": [
+        {
+          "name": "search"
+        },
+        {
+          "name": "delete"
+        },
+        {
+          "name": "page-change"
+        },
+        {
+          "name": "create"
+        }
+      ],
+      "exposes": [
+        {
+          "name": "refresh",
+          "signature": "(keywordText?: string) => Promise<number>",
+          "description": "重新拉取列表（可带关键词覆盖搜索框），返回本次过滤后的条数"
+        },
+        {
+          "name": "setKeyword",
+          "signature": "(kw: string) => Promise<number>",
+          "description": "设置筛选关键词并立即查询（等价于在搜索框输入后点搜索）"
+        }
+      ],
+      "description": "用户列表页，展示所有用户数据，支持按姓名或邮箱搜索、分页浏览、删除用户和查看详情",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "user-detail",
+      "name": "UserDetail",
+      "path": "/users/:id",
+      "title": "用户详情",
+      "framework": "vue",
+      "params": [
+        {
+          "name": "id",
+          "type": "string"
+        }
+      ],
+      "props": [
+        {
+          "name": "user",
+          "type": "Object",
+          "description": "外部传入完整的用户对象（agent/宿主直接渲染时用，二选一）"
+        },
+        {
+          "name": "id",
+          "type": "Any",
+          "description": "路由参数 id（agent 传 id 按需拉取）"
+        }
+      ],
+      "events": [
+        "save"
+      ],
+      "emits": [
+        {
+          "name": "save"
+        }
+      ],
+      "description": "用户详情页，展示并编辑单个用户的姓名、邮箱、角色，支持保存",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "app-dashboard",
+      "name": "Dashboard",
+      "path": "/dashboard",
+      "title": "数据看板",
+      "framework": "vue",
+      "params": [],
+      "props": [
+        {
+          "name": "stats",
+          "type": "Array",
+          "description": "外部可注入统计指标；不传则用内置 mock"
+        }
+      ],
+      "events": [],
+      "description": "数据看板页，展示用户总数、今日活跃、订单数、转化率等统计指标",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "order-list",
+      "name": "OrderList",
+      "path": "/orders",
+      "title": "订单管理",
+      "framework": "vue",
+      "params": [],
+      "props": [
+        {
+          "name": "orders",
+          "type": "Array",
+          "description": "外部可注入订单数据；不传则用内置 mock（便于独立演示）"
+        }
+      ],
+      "events": [
+        "filter",
+        "view"
+      ],
+      "emits": [
+        {
+          "name": "filter"
+        },
+        {
+          "name": "view"
+        }
+      ],
+      "description": "订单管理页，展示所有订单，支持按状态筛选和查看订单详情",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "product-list",
+      "name": "ProductList",
+      "path": "/products",
+      "title": "商品管理",
+      "framework": "vue",
+      "params": [],
+      "props": [
+        {
+          "name": "products",
+          "type": "Array",
+          "description": "外部可注入商品数据；不传则用内置 mock（便于独立演示）"
+        },
+        {
+          "name": "keyword",
+          "type": "String",
+          "description": "搜索关键词（agent 可通过 props 传入过滤条件）"
+        }
+      ],
+      "events": [
+        "search",
+        "filter",
+        "view",
+        "create",
+        "off-shelf"
+      ],
+      "emits": [
+        {
+          "name": "search"
+        },
+        {
+          "name": "filter"
+        },
+        {
+          "name": "view"
+        },
+        {
+          "name": "create"
+        },
+        {
+          "name": "off-shelf"
+        }
+      ],
+      "description": "商品管理页，展示商品列表，支持按分类筛选、搜索和查看/下架商品",
+      "keywords": [],
+      "exampleQueries": []
+    },
+    {
+      "tag": "datasource-admin",
+      "name": "DatasourceAdmin",
+      "path": "/datasource",
+      "title": "数据源管理",
+      "framework": "vue",
+      "params": [],
+      "props": [
+        {
+          "name": "sources",
+          "type": "{ id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }[]",
+          "description": "外部可注入数据源列表；不传则用内置 mock"
+        },
+        {
+          "name": "owner",
+          "type": "{ id: number; displayName: string }",
+          "description": "负责人信息（演示嵌套自定义类型展开）"
+        },
+        {
+          "name": "onlyEnabled",
+          "type": "boolean",
+          "description": "只展示启用中的数据源"
+        }
+      ],
+      "events": [
+        "submit",
+        "select",
+        "close"
+      ],
+      "emits": [
+        {
+          "name": "submit",
+          "payloadType": "[payload: { name: string; host: string; port?: number; status?: \"active\" | \"disabled\"; options?: Record<string, string>; owner?: { id: number; displayName: string } }]",
+          "description": "提交新建数据源"
+        },
+        {
+          "name": "select",
+          "payloadType": "[source: { id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }]",
+          "description": "选中某条数据源"
+        },
+        {
+          "name": "close",
+          "payloadType": "[reason?: string]",
+          "description": "关闭（可选原因）"
+        }
+      ],
+      "exposes": [
+        {
+          "name": "save",
+          "signature": "(data: { name: string; host: string; port?: number; status?: \"active\" | \"disabled\"; options?: Record<string, string>; owner?: { id: number; displayName: string } }) => Promise<{ id: number; name: string; host: string; port: number; tags: string[]; enabled: boolean; status: \"active\" | \"disabled\"; kind: \"mysql\" | \"redis\"; owner: null | { id: number; displayName: string } }>",
+          "description": "保存数据源，返回保存后的完整对象（agent 可据返回值继续规划）"
+        },
+        {
+          "name": "refresh",
+          "signature": "(force?: boolean) => Promise<number>",
+          "description": "重新拉取数据源列表，返回条数"
+        },
+        {
+          "name": "onSubmit",
+          "signature": "() => void"
+        }
+      ],
+      "description": "数据源管理页，用类型写法声明 props/emits，支持保存、刷新与提交新建数据源",
+      "keywords": [],
+      "exampleQueries": []
+    }
+  ],
+  "rules": [
+    {
+      "name": "domain-conventions",
+      "instructions": "- 本项目运行在演示环境，禁止把演示数据描述成真实生产数据。\n- 涉及「数据源」的诉求，统一打开数据源管理页（/datasource）。\n- 用户提到「图谱」「关系图」「3D」时，优先打开 3D 图谱页（/graph）。\n- 面向用户的回答里不要输出页面自定义元素标签（如 <datasource-admin>），直接用中文页面名。"
+    }
+  ]
+}

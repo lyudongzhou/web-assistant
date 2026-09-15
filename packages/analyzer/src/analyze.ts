@@ -91,6 +91,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
   const resolver = resolveComponentTypes(root, options.tsconfigPath)
 
   const pages: ManifestPage[] = []
+  // 宿主直连批次（用法 B）：wc.pages.json 没声明 container → 不写 containers / pages[].bundle
+  const hostOnly = !config.container
   for (const page of config.pages) {
     const tag = resolveTag(page)
     const routePath = page.path || `/${tag}`
@@ -141,7 +143,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
       path: routePath,
       title: page.title,
       framework,
-      bundle: pageBundlePath(tag),
+      // 宿主直连批次没有页面产物（页面就是宿主的路由组件）
+      ...(hostOnly ? {} : { bundle: pageBundlePath(tag) }),
       params,
       props,
       // events：runtime 的 CE 事件监听白名单，必须是「名字数组」
@@ -161,12 +164,14 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
 
   const manifest: RuntimeManifest = {
     version: MANIFEST_VERSION,
-    containers: {
-      [framework]: {
-        bundle: containerBundlePath(framework),
-        tagName: containerTagName(framework),
-      },
-    },
+    containers: hostOnly
+      ? {}
+      : {
+          [framework]: {
+            bundle: containerBundlePath(framework),
+            tagName: containerTagName(framework),
+          },
+        },
     pages,
   }
   if (config.sharedStyles?.length) manifest.styles = { shared: config.sharedStyles }

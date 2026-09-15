@@ -274,13 +274,19 @@ export function wcBuildPlugin(options: WcPluginOptions = {}): Plugin[] {
       const config = loadWcPages(root, options.configPath);
       const entryDir = prepareEntryDir(path.resolve(root, entryDirName));
 
+      // WC 构建必须有容器入口（省略 container 的 wc.pages.json 是「宿主直连批次」，
+      // 只跑 analyzer / wcManifestPlugin 生成页面目录，不该走本插件）
+      const containerEntry = config.container;
+      if (!containerEntry) {
+        throw new Error(
+          `${options.configPath ?? 'wc.pages.json'} 缺少 container：WC 构建（wcVuePlugin）需要容器入口。` +
+            '宿主直连模式（用法 B）请只使用 analyzer 或 wcManifestPlugin 生成 manifest，不要走 WC 构建。',
+        );
+      }
+
       // 容器入口直接指向宿主项目那个文件（它默认导出 adapter），产物落到 containers/<framework>.js
       const entries: Record<string, string> = {
-        [CONTAINER_ENTRY_KEY]: resolveSpecifier(
-          config.container,
-          root,
-          aliases,
-        ),
+        [CONTAINER_ENTRY_KEY]: resolveSpecifier(containerEntry, root, aliases),
       };
       const fileNames = new Map<string, string>([
         [CONTAINER_ENTRY_KEY, containerBundlePath(config.framework)],

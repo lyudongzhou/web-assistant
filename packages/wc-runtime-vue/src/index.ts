@@ -47,9 +47,22 @@ export {
   toRouteRecords,
   type VueRouterBridge,
 } from './vueRouterBridge.js'
+export {
+  createRouterSync,
+  defaultApplyLocation,
+  toNavigationTarget,
+  type RouterSyncOptions,
+  type VueRouterSync,
+} from './routerSync.js'
+// 宿主直连用法（用法 B）：agent 操作宿主真实 router，页面在宿主自己的 <router-view> 渲染。
+// 只想用这一条用法时走子入口 `@webassistant/wc-runtime-vue/host-router`（不引入容器 / CE 机制）。
+export { createVueHostSurface, type VueHostSurface, type VueHostSurfaceOptions } from './hostSurface.js'
+export { createVueHostRuntime, type CreateVueHostRuntimeOptions } from './hostRouter.js'
 
 // 转出宿主会用到的 core 契约类型，让宿主无需直接依赖 core
 export type {
+  HostSurface,
+  HostSurfaceRuntimeApi,
   NavigationResult,
   NavigationTarget,
   Runtime,
@@ -61,7 +74,9 @@ export type {
   RuntimeRoute,
   RuntimeServices,
   RuntimeStatus,
+  RuntimeSurfaceKind,
   RuntimeView,
+  SurfaceRenderContext,
 } from '@webassistant/wc-runtime-core'
 
 export interface CreateVueRuntimeOptions extends Omit<CreateRuntimeOptions, 'adapters'> {

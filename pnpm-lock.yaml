@@ -147,6 +147,9 @@ importers:
       3d-force-graph:
         specifier: ^1.80.0
         version: 1.80.0
+      '@webassistant/chat-client':
+        specifier: workspace:*
+        version: link:../chat-client
       '@webassistant/wc-runtime-vue':
         specifier: workspace:*
         version: link:../wc-runtime-vue

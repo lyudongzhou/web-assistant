@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 IMAGE_TAG="agent-server:amd64"
 PLATFORM="linux/amd64"
-NPM_REGISTRY="http://172.16.21.103:4873/"
+NPM_REGISTRY="https://registry.npmjs.org/"
 OUTPUT=""
 DO_SAVE=1
 NO_CACHE=0

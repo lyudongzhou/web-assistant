@@ -10,11 +10,13 @@
     "preview": "vite preview",
     "build:ce": "vite build --config vite.ce.config.ts",
     "analyze": "wc-analyze --config wc.pages.json",
+    "analyze:host": "mkdir -p public/wc && wc-analyze --config wc.host.json --out public/wc/manifest.json --no-ai",
     "preview:ce": "node serve.mjs",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "3d-force-graph": "^1.80.0",
+    "@webassistant/chat-client": "workspace:*",
     "@webassistant/wc-runtime-vue": "workspace:*",
     "axios": "^1.20.0",
     "element-plus": "^2.14.5",

@@ -1,0 +1,48 @@
+{
+  "framework": "vue",
+  "rules": ["rules/domain.md"],
+  "pages": [
+    {
+      "name": "UserList",
+      "tag": "user-list",
+      "path": "/users",
+      "title": "用户列表",
+      "component": "src/pages/UserList.vue"
+    },
+    {
+      "name": "UserDetail",
+      "tag": "user-detail",
+      "path": "/users/:id",
+      "title": "用户详情",
+      "component": "src/pages/UserDetail.vue"
+    },
+    {
+      "name": "Dashboard",
+      "tag": "app-dashboard",
+      "path": "/dashboard",
+      "title": "数据看板",
+      "component": "src/pages/AppDashboard.vue"
+    },
+    {
+      "name": "OrderList",
+      "tag": "order-list",
+      "path": "/orders",
+      "title": "订单管理",
+      "component": "src/pages/OrderList.vue"
+    },
+    {
+      "name": "ProductList",
+      "tag": "product-list",
+      "path": "/products",
+      "title": "商品管理",
+      "component": "src/pages/ProductList.vue"
+    },
+    {
+      "name": "DatasourceAdmin",
+      "tag": "datasource-admin",
+      "path": "/datasource",
+      "title": "数据源管理",
+      "component": "src/pages/DatasourceAdmin.vue"
+    }
+  ]
+}

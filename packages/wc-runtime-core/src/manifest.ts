@@ -29,6 +29,17 @@ export interface NormalizeOptions {
   assetBase?: string
   /** 预注册 adapter 的 framework 列表（这些 framework 不要求 containers 里有 bundle） */
   preRegisteredFrameworks?: readonly string[]
+  /**
+   * 宿主渲染面（host 模式）：放宽 WC 专属校验 ——
+   * `pages[].bundle` 可省、`containers` 可为空、页面 tag 无需含 '-'（不再是自定义元素标签，只是稳定页面 ID）。
+   * 容器模式（缺省）保持全部严格校验。
+   */
+  forHostSurface?: boolean
+  /**
+   * 页面未声明 framework 时的兜底（供宿主渲染面用：它本身就是某个具体 framework）。
+   * 容器模式不用（缺省取「唯一容器」的 framework）。
+   */
+  defaultFramework?: string
 }
 
 export function normalizeManifest(
@@ -52,7 +63,8 @@ export function normalizeManifest(
   )
   const containerFrameworks = new Set(containers.map((c) => c.framework))
   const knownFrameworks = new Set([...containerFrameworks, ...preRegistered])
-  const defaultFramework = containerFrameworks.size === 1 ? [...containerFrameworks][0] : undefined
+  const defaultFramework =
+    containerFrameworks.size === 1 ? [...containerFrameworks][0] : options.defaultFramework
 
   const pages = input.pages ?? []
   if (!pages.length) throw new Error('manifest.pages 不能为空')
@@ -61,10 +73,12 @@ export function normalizeManifest(
   const seenNames = new Set<string>()
   const routes: RuntimeRoute[] = pages.map((page, index) => {
     if (!page || !page.name) throw new Error(`manifest.pages[${index}] 缺少 name`)
-    if (!page.bundle) throw new Error(`manifest.pages[${index}](${page.name}）缺少 bundle`)
+    if (!page.bundle && !options.forHostSurface) {
+      throw new Error(`manifest.pages[${index}](${page.name}）缺少 bundle`)
+    }
 
     const tag = resolveTag(page)
-    if (!tag.includes('-')) {
+    if (!tag.includes('-') && !options.forHostSurface) {
       throw new Error(`页面 ${page.name} 的 tag「${tag}」不合法：自定义元素标签必须包含 '-'`)
     }
     if (seenTags.has(tag)) throw new Error(`重复的 tag：${tag}`)
@@ -92,7 +106,7 @@ export function normalizeManifest(
       path,
       title: page.title,
       framework,
-      bundle: joinUrl(assetBase, page.bundle),
+      bundle: page.bundle ? joinUrl(assetBase, page.bundle) : '',
       params: page.params?.length ? page.params : extractParams(path),
       props: page.props ?? [],
       events: page.events ?? [],

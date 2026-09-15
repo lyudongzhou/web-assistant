@@ -36,6 +36,16 @@
       "types": "./dist/host.d.ts",
       "import": "./dist/host.js",
       "default": "./dist/host.js"
+    },
+    "./host-router": {
+      "types": "./dist/hostRouter.d.ts",
+      "import": "./dist/hostRouter.js",
+      "default": "./dist/hostRouter.js"
+    },
+    "./routerSync": {
+      "types": "./dist/routerSync.d.ts",
+      "import": "./dist/routerSync.js",
+      "default": "./dist/routerSync.js"
     }
   },
   "files": [

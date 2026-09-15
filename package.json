@@ -5,6 +5,8 @@
   "description": "对话式 Web 助手：把路由页面编译为 Web Component，供 Agent 按需推送渲染",
   "scripts": {
     "dev": "pnpm --filter demo-app dev",
+    "dev:host": "pnpm --filter demo-app dev",
+    "analyze:host": "pnpm --filter demo-app analyze:host",
     "build:libs": "pnpm --filter @webassistant/protocol build && pnpm --filter @webassistant/wc-runtime-core build && pnpm --filter @webassistant/wc-runtime-vue build && pnpm --filter @webassistant/analyzer build && pnpm --filter @webassistant/vite-plugin-wc build && pnpm --filter @webassistant/chat-client build:lib",
     "build:ce": "pnpm build:libs && pnpm --filter demo-app build:ce",
     "analyze": "pnpm --filter @webassistant/analyzer build && pnpm --filter demo-app analyze",

@@ -17,7 +17,7 @@
         @send="send"
       />
 
-      <div class="render-area panel">
+      <div v-if="renderArea" class="render-area panel">
         <div class="panel-title render-title">
           <span>渲染区域</span>
           <span v-if="status === 'loading'" class="loading-tip">加载中…</span>
@@ -51,6 +51,30 @@
                 </div>
               </template>
             </slot>
+          </div>
+        </div>
+      </div>
+
+      <!-- host 模式（宿主直连）：**没有渲染区** —— 页面在宿主自己的 <router-view> 渲染，
+           面板只说明状态，避免用户以为「页面会出现在这里」。 -->
+      <div v-else class="render-area panel">
+        <div class="panel-title render-title">
+          <span>宿主直连模式</span>
+          <span v-if="loading" class="loading-tip">Agent 思考中…</span>
+          <button v-if="loading" class="back-btn" @click="cancel()">
+            ✕ 打断
+          </button>
+        </div>
+        <div class="render-body">
+          <div class="empty">
+            <p v-if="error" class="error-tip">{{ error.message }}</p>
+            <div class="empty-fallback">
+              <p>页面在宿主界面中打开</p>
+              <p class="hint">
+                <template v-if="pageTitle">当前页面：{{ pageTitle }}</template>
+                <template v-else>等待 agent 打开页面…</template>
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -127,6 +151,8 @@ const {
 } = useWebAssistant({
   wcBase: props.wcBase,
   wsBase: props.wsBase,
+  surface: props.surface,
+  createRuntime: props.createRuntime,
   initialPage: props.initialPage,
   services: props.services,
   debug: props.debug,
@@ -135,6 +161,9 @@ const {
   onError: (info) => emit('error', info),
   onRuntimeReady: (runtime) => props.onRuntimeReady?.(runtime),
 })
+
+/** 是否渲染面板内的「渲染区域」：host 模式（宿主直连）没有它 —— 页面在宿主自己的位置渲染 */
+const renderArea = computed(() => props.surface !== 'host')
 
 // 欢迎页 = 渲染区空态（runtime 没有渲染子 WC）。状态机在 useWebAssistant 里算好（纯逻辑见 lib/welcome.ts），
 // 因此「内置默认」与「宿主自定义」用的是同一份判断/合并。

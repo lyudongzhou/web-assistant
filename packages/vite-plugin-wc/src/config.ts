@@ -26,9 +26,8 @@ export function loadWcPages(root: string, configPath = WC_PAGES_FILE): LoadedCon
   if (!Array.isArray(raw.pages) || raw.pages.length === 0) {
     throw new Error(`${file} 的 pages 不能为空`)
   }
-  if (!raw.container) {
-    throw new Error(`${file} 缺少 container（容器入口文件路径，默认导出 adapter）`)
-  }
+  // container 省略 = 宿主直连批次（用法 B）：只生成页面目录，不构建 WC。
+  // WC 构建侧（wcVuePlugin / wcBuildPlugin）会自己要求它存在（见 entries）。
 
   const seen = new Set<string>()
   for (const [index, page] of raw.pages.entries()) {

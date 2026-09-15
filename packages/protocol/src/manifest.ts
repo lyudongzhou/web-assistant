@@ -41,8 +41,11 @@ export interface ManifestPage {
   title?: string
   /** 所属框架批次，决定用哪个容器渲染 */
   framework: string
-  /** 页面 bundle 相对路径，如 pages/userList.js */
-  bundle: string
+  /**
+   * 页面 bundle 相对路径，如 pages/userList.js。
+   * **宿主直连模式（host）没有 bundle** —— 页面是宿主自己的路由组件，不经产物编译。
+   */
+  bundle?: string
   params?: ManifestParam[]
   props?: ManifestProp[]
   events?: string[]
@@ -134,7 +137,8 @@ export interface RuntimeManifestInput {
     path?: string
     title?: string
     framework?: string
-    bundle: string
+    /** 宿主直连模式可省（页面不经 bundle 渲染） */
+    bundle?: string
     params?: ManifestParam[]
     props?: ManifestProp[]
     events?: string[]

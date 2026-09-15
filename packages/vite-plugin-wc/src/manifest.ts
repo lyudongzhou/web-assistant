@@ -205,7 +205,8 @@ async function analyzePage(
     path: routePath,
     title: page.title,
     framework: config.framework,
-    bundle: pageBundlePath(tag),
+    // 宿主直连批次（无 container）没有页面产物
+    ...(config.container ? { bundle: pageBundlePath(tag) } : {}),
     params,
     props,
     // 与 analyzer/analyze.ts 保持一致的双写：events = runtime 监听白名单（名字数组），
@@ -291,14 +292,18 @@ export async function generateManifestIncremental(
   }
 
   // 组装 manifest
+  // 宿主直连批次（wc.pages.json 未声明 container）：只出页面目录，不写 containers
+  const hostOnly = !config.container
   const manifest: RuntimeManifest = {
     version: MANIFEST_VERSION,
-    containers: {
-      [config.framework]: {
-        bundle: containerBundlePath(config.framework),
-        tagName: containerTagName(config.framework),
-      },
-    },
+    containers: hostOnly
+      ? {}
+      : {
+          [config.framework]: {
+            bundle: containerBundlePath(config.framework),
+            tagName: containerTagName(config.framework),
+          },
+        },
     pages: newPages,
   }
   if (config.sharedStyles?.length) manifest.styles = { shared: config.sharedStyles }

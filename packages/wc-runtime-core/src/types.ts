@@ -29,7 +29,7 @@ export interface RuntimeRoute {
   title?: string
   /** 所属框架批次，决定用哪个容器渲染 */
   framework: string
-  /** 页面 bundle 的可加载 URL（已拼好 assetBase） */
+  /** 页面 bundle 的可加载 URL（已拼好 assetBase）；宿主渲染面模式下为空字符串（页面不经 bundle 渲染） */
   bundle: string
   params: RouteParamDef[]
   props: RoutePropDef[]
@@ -245,6 +245,83 @@ export interface RouterBridge {
   dispose(): void
 }
 
+// ---------------------------------------------------------------- 渲染面（用法 B：宿主直连）
+
+/**
+ * 渲染面种类：
+ * - `container`（缺省）：页面 bundle 编译成 Web Component，由 runtime 的容器渲染（用法 A）
+ * - `host`：导航落到宿主自己的渲染机制（真实 vue-router 等），页面在宿主自己的位置渲染（用法 B）
+ */
+export type RuntimeSurfaceKind = 'container' | 'host'
+
+/**
+ * 内核接入钩子（宿主渲染面实现可用）：
+ * 拿内核的稳定引用去 provide runtime context，并在「页面真正挂载后」请求重新广播 expose。
+ */
+export interface HostSurfaceRuntimeApi {
+  /** 外层传入依赖的稳定引用（provide 给宿主页面） */
+  readonly servicesRef: ServicesRef
+  /** 框架无关导航 API */
+  readonly navigation: RuntimeNavApi
+  readonly observer: NetworkObserver
+  /** 当前页面目录（实时）—— 宿主可用它判断「当前路由是否在目录内」 */
+  readonly routes: () => readonly RuntimeRoute[]
+  /**
+   * 请求内核重新广播某页的 expose 能力清单。
+   * host 模式的真实组件可能在本轮导航之后才挂载（异步组件 + RouterView 渲染时机），
+   * 宿主实现可在挂载后调它，避免 agent 首轮拿到空的能力清单。
+   */
+  broadcastExposed(tag: string): void
+}
+
+/**
+ * 宿主原生渲染面（**框架无关契约**，实现放在框架包里，如 `@webassistant/wc-runtime-vue` 的
+ * `createVueHostSurface`）。
+ *
+ * 语义边界：
+ * - runtime 的 `navigate({ tag })` 最终会变成 `apply(view, { replace, source })`；
+ * - 宿主自己的导航（点击链接 / 浏览器前进后退）必须经 `createRouterBridge` 的 `afterEach` → `commit` 回流；
+ * - 宿主真实 history 是「可回退」的最终裁决（给 `history` 即接管内核自己的 entries）。
+ */
+export interface HostSurface {
+  /** 归属框架，必须与页面 `framework` 对齐（Vue 宿主 = 'vue'） */
+  framework: string
+  /**
+   * 把「当前页」落到宿主渲染面（真实 `router.replace/push({ name, params, query })` / tab 切换…）。
+   * 抛错表示宿主拒绝了这次导航（内核广播 error + 调用方拿到结构化失败）。
+   */
+  apply(view: RuntimeView, options: { replace: boolean; source: NavigationSource }): void | Promise<void>
+  /** 内核接入钩子（init 时调用一次） */
+  bindRuntime?(api: HostSurfaceRuntimeApi): void
+  /**
+   * 页面目录一致性校验（init 时调用一次）：
+   * 宿主应把「manifest 声明但真实路由表里没有」的页面**一次性报出来**。
+   *
+   * 注意：**不要**用抛错实现 —— 真实项目的页面路由常常是登录后 / 按权限才注册的
+   * （vben 的 access routes 就是这样），init 时它们可能还不存在。宿主实现应记录并告警，
+   * 由 `canRender` 在实际导航时给出结构化失败。
+   */
+  validateRoutes?(routes: readonly RuntimeRoute[]): void
+  /**
+   * 该页此刻是否可渲染（内核在 commit 前调用）；返回原因字符串 = 不可渲染。
+   * 典型实现：`router.hasRoute(route.name) ? null : '宿主 router 未注册该路由…'`
+   */
+  canRender?(route: RuntimeRoute): string | null
+  /** 取页面 defineExpose（agent call_page_method 的入口）；未实现 = 该宿主不支持 expose */
+  getPageExposed?(page?: string): Record<string, unknown> | null
+  /** 宿主真实历史；给了就接管内核的可回退判定与前进 / 后退（host 模式应当给） */
+  history?: {
+    readonly canGoBack: boolean
+    readonly canGoForward: boolean
+    go(delta: number): void | Promise<void>
+  }
+  /** 宿主当前路由快照（host 模式 init 时用于 adopt 已有页面）；无当前页返回 null */
+  snapshot?(): NavigationTarget | null
+  /** 让宿主 router 的导航回流内核（beforeEach 守卫前移 + afterEach commit） */
+  createRouterBridge?(api: RouterBridgeApi): RouterBridge
+  dispose?(): void
+}
+
 export interface RuntimeAdapter<H = unknown> {
   readonly framework: string
   /** 默认容器标签名（manifest 未声明时用） */
@@ -313,11 +390,24 @@ export interface CreateRuntimeOptions {
   assetBase?: string
   /** 预注册 adapter（runtime-vue 会传自己；此时该 framework 无需容器 bundle） */
   adapters?: RuntimeAdapter[]
+  /**
+   * 渲染面种类（缺省 `container`）：
+   * - `container`：WC 用法（页面 bundle + 容器渲染）
+   * - `host`：宿主直连用法（必须同时给 `hostSurface`）
+   */
+  surface?: RuntimeSurfaceKind
+  /** 宿主渲染面实现（`surface: 'host'` 时必填） */
+  hostSurface?: HostSurface
+  /**
+   * host 模式：init 时是否把宿主**当前路由**纳入内核（缺省 true）。
+   * 打开后 agent 首轮决策就知道「用户现在在哪个页面」；关闭则从空态开始。
+   */
+  adopt?: boolean
   services?: RuntimeServices
   containerStrategy?: ContainerStrategy
   /** 初始导航目标，缺省为第一条路由 */
   initial?: NavigationTarget | null
-  /** 初始化时是否预加载全部页面 bundle（换页无 FOUC，代价是首屏更慢） */
+  /** 初始化时是否预加载全部页面 bundle（换页无 FOUC，代价是首屏更慢；host 模式无意义） */
   preload?: 'none' | 'all'
   /** 是否开启 NetworkObserver 自动拦截（默认 false，方案 B 用 apiBus 手动上报） */
   observeNetwork?: boolean
@@ -327,7 +417,10 @@ export interface CreateRuntimeOptions {
 }
 
 export interface Runtime {
-  init(container: Element): Promise<void>
+  /**
+   * 初始化。`container` 模式需要挂载点；`host` 模式可省（页面由宿主自己渲染）。
+   */
+  init(container?: Element | null): Promise<void>
   navigate(target: NavigationTarget): Promise<NavigationResult>
   back(): Promise<NavigationResult>
   forward(): Promise<NavigationResult>

@@ -2,6 +2,12 @@
 // 定义层：契约类型 + 框架无关实现。宿主不直接依赖本包，请使用 @webassistant/wc-runtime-vue。
 export * from './types.js'
 export { createRuntime } from './runtime.js'
+export type {
+  KernelHandles,
+  PageSurface,
+  RuntimeHistory,
+  SurfaceRenderContext,
+} from './surface.js'
 export { normalizeManifest, extractParams, type NormalizeOptions } from './manifest.js'
 export {
   createNavigationController,

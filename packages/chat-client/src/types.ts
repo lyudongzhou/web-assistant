@@ -12,6 +12,7 @@ import type {
   RuntimeRoute,
   RuntimeServices,
   RuntimeStatus,
+  RuntimeSurfaceKind,
 } from '@webassistant/wc-runtime-vue/host'
 
 /**
@@ -37,9 +38,37 @@ export interface PageChangeInfo {
   params?: Record<string, unknown>
 }
 
+/**
+ * 宿主构造 runtime 的上下文（`createRuntime` 注入口的入参）。
+ * host 模式（`surface: 'host'`）下宿主用 `createVueHostRuntime({ router, app, ... })` 造出 runtime 返回；
+ * container 模式（缺省）不需要这个注入口，chat-client 自己按 `wcBase` 拉 manifest + dist-ce。
+ */
+export interface WebAssistantRuntimeContext {
+  /** manifest 基址（`{wcBase}`）；宿主可据此拼自己的 manifestUrl */
+  base: string
+  /** 首屏目标（`initialPage` 解析结果；host 模式通常为 null —— 靠 adopt 接管宿主当前路由） */
+  initial: { tag: string } | null
+  /** 渲染面种类（与 props.surface 一致） */
+  surface: RuntimeSurfaceKind
+}
+
 export interface WebAssistantProps {
   /** manifest 在 {wcBase}/manifest.json，WC 产物在 {wcBase}/dist-ce */
   wcBase?: string
+  /**
+   * 渲染面（用法）：
+   * - `container`（缺省）：WC 用法 —— 页面编译成 Web Component，在面板内的渲染区渲染
+   * - `host`：宿主直连用法 —— agent 操作宿主自己的 router，页面在宿主自己的 `<router-view>` 渲染
+   *   （必须同时给 `createRuntime`，由宿主提供 `createVueHostRuntime` 造出的 runtime）
+   */
+  surface?: RuntimeSurfaceKind
+  /**
+   * runtime 构造注入口（host 模式必填）。chat-client 借此保持框架无关（不 import vue-router）：
+   * ```ts
+   * :create-runtime="({ initial }) => createVueHostRuntime({ router, app, manifestUrl: '/wc/manifest.json', initial })"
+   * ```
+   */
+  createRuntime?: (context: WebAssistantRuntimeContext) => Runtime
   /** WebSocket 地址前缀（默认 '/ws'） */
   wsBase?: string
   /** agent-server HTTP 地址前缀（保留，用于 future HTTP 降级） */

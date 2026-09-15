@@ -7,6 +7,40 @@
 
 ---
 
+## 0. 内核 / 渲染面（两种用法共用同一内核）
+
+```
+createRuntime({ surface })          ← 装配器：挑一个渲染面 + 装内核
+  │
+  ├── kernel.ts                     内核：导航真相源(navigation) · services/state · 事件总线 ·
+  │                                 网络观测(observer/apiBus) · 留痕(activity) · 页面目录(manifest) ·
+  │                                 props 归一 · 视图状态机(view/status/error) · expose 广播
+  │                                 —— 只通过下面两个扩展点接触「页面怎么落到屏幕」，不含 WC 概念
+  │
+  ├── surfaceContainer.ts          用法 A（容器/WC）：bundle 加载 + 自定义元素 + 容器 + 样式分层 + 页级 scope
+  └── surfaceHost.ts               用法 B（宿主直连）：把 view 交给宿主自己的渲染机制
+                                   （框架包实现 HostSurface：createVueHostSurface / createVueHostRuntime）
+
+扩展点（`surface.ts`）：
+  PageSurface    attach / mount / ensure / prepare / isReady / render / styles / getPageExposed /
+                 bindRouter / snapshot / history / dispose
+  RuntimeHistory canGoBack / canGoForward / go(delta)   ← 给了 = 宿主真实历史是最终裁决（host 模式）
+```
+
+- 默认 `surface: 'container'`，既有行为与解耦前**逐字节等价**（既有单测断言零改动）。
+- `PageSurface.getPageExposed` 返回 `undefined` = 该渲染面**不支持** expose（内核跳过
+  `page-exposed-changed` 广播）；`null` = 支持但没有可读实例（广播空 keys）。
+- 宿主模式下**不传 `initial`** 不会自动打开任何页面（页面由宿主 URL 决定），首屏靠 `adopt`
+  把宿主当前路由纳入内核；`adopt: false` 可关。
+- 页面目录一致性：宿主实现应实现 `HostSurface.validateRoutes` —— init 时找出「manifest 声明但真实
+  路由表没有」的 `name` 并**一次性告警，但绝不使 init 失败**（真实项目的页面路由常是登录后 / 按权限
+  才注册的）；再实现 `canRender` —— 内核在 **commit 之前**询问「这一页此刻能不能渲染」，返回原因即
+  结构化失败（`not-found`，内核状态与宿主 URL 都不动）。这是「agent render → 404 / 状态分裂」最常见的坑。
+- 宿主模式的已知能力缺口：`defineEmits` 不会被自动捕获（没有 CE 边界），页面需显式
+  `useRuntimeServices().emit()`；直传 props 走旁路 `context.pageProps`（真实 router 承载不了对象）。
+
+---
+
 ## 1. 分层与依赖二分模型
 
 ```

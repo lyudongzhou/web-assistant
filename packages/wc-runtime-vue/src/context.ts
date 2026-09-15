@@ -14,6 +14,14 @@ export interface RuntimeServicesContext {
   readonly nav: RuntimeNavApi
   /** 网络观察器（与容器同一实例；页面一般用不到，但保留以备后用） */
   readonly observer: NetworkObserver
+  /**
+   * 随导航下发的「直传 props」旁路通道（浅响应式）。
+   * - **host 模式（宿主直连）**：由 createVueHostSurface 写入 —— agent / 宿主直传的 props 落在这里，
+   *   页面用 `useRuntimeServices().pageProps` 读（真实 router 承载不了对象，只能走旁路）
+   * - **container 模式**：恒为空对象 —— container 把 props 写成自定义元素的 property，
+   *   页面照旧用 `defineProps` 接收
+   */
+  readonly pageProps: Record<string, unknown>
   /** i18n 翻译函数（缺省时原样返回 key，便于本地跑） */
   t(key: string, ...args: unknown[]): string
   /** 宿主注入的请求实例 */
@@ -33,12 +41,14 @@ export function createRuntimeContext(
   nav: RuntimeNavApi,
   state: ShallowReactive<Record<string, unknown>>,
   observer: NetworkObserver,
+  pageProps: Record<string, unknown> = {},
 ): RuntimeServicesContext {
   return {
     get services() { return servicesRef.current },
     state,
     nav,
     observer,
+    pageProps,
     t(key, ...args) {
       const translate = servicesRef.current.t
       return typeof translate === 'function' ? translate(key, ...args) : key

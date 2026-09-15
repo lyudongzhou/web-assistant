@@ -1,0 +1,23 @@
+{
+  "changeId": "add-host-router-surface",
+  "revisions": [
+    {
+      "id": "rev-b1e8c62c",
+      "description": "路由一致性校验从「init 时抛错」改为「init 时告警 + commit 前 canRender 结构化失败」。新增 PageSurface.canRender 扩展点（内核在 commit 前调用），桥的 apply 异常也转成结构化 load-failed。",
+      "reason": "真实项目（vben 系 access routes）的页面路由是登录后按权限才注册的：init 时 router.hasRoute(name) 必然为 false，抛错会让助手在登录页直接不可用；同时权限过滤意味着 manifest 里的页面可能根本不可达，必须在导航处给出可读失败而不是静默 404 或状态分裂。",
+      "author": "AI",
+      "createdAt": "2026-09-15T14:06:09.201Z",
+      "metadata": {
+        "type": "contract",
+        "updateTarget": [
+          "design",
+          "delta-specs"
+        ],
+        "source": {
+          "file": "packages/wc-runtime-vue/src/hostSurface.ts",
+          "function": "createVueHostSurface.validateRoutes / canRender"
+        }
+      }
+    }
+  ]
+}

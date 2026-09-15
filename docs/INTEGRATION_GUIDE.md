@@ -355,3 +355,147 @@ const { welcomePage, hasPage, currentTag, error } = useWebAssistant({ wcBase: '/
 
 > 注意：欢迎页组件由**宿主构建的 Vue**渲染（light DOM），因此可以用宿主自己的 UI 库 / 主题变量（`--wa-*`）。
 > 容器内的 `renderEmpty`（批次内空态）是另一回事：它属于容器 shadow DOM 内部、由被服务项目配置。
+## 9. 用法 B：宿主直连（agent 操作你项目自己的 router）★
+
+> 目标读者：想让 agent 直接驱动自己项目路由的前端同学。
+> 与上面 1–8 章（**用法 A：容器 / WC**）的区别：不编译 Web Component、不建容器、不做样式隔离 ——
+> 页面还是你自己的页面，在**你自己的 `<router-view>`** 里渲染。
+> 可运行示例：`packages/demo-app/host.html` + `src/host-main.ts`（`pnpm dev:host`）。
+
+### 9.1 一句话
+
+在宿主自己的 vite/vue-router 项目里 **加 2 处代码 + 1 份页面清单**，agent 的 `render` 就变成 `router.push`：
+URL 真的变、页面在原来位置渲染、宿主的守卫/登录态/样式全部生效。
+
+### 9.2 装什么 / 不装什么
+
+| | 包 | 说明 |
+|---|---|---|
+| 运行时装 | `@webassistant/chat-client`、`@webassistant/wc-runtime-vue`（子入口 `host-router`）、`@webassistant/wc-runtime-core`、`@webassistant/protocol`（传递） | `host-router` 子入口不引入容器 / CE / 样式机制 |
+| 开发时装 | `@webassistant/analyzer`（CLI 生成 manifest）；`@webassistant/vite-plugin-wc`（**只用 `wcManifestPlugin`** 做 dev 热生成） | `wcManifestPlugin` 与 CE 构建无关，可在普通 SPA 配置里单独用 |
+| **不装** | `vite-plugin-wc` 的 `wcVuePlugin` / `wcBuildPlugin` | —— |
+| **不建** | `vite.ce.config.ts`、`src/ce/container.ts`、`dist-ce/` | 页面不需要产物 |
+| **不跑** | `pnpm build:ce`、静态服务器（8080 那套） | manifest 同源，不需要 `/wc` 代理 |
+
+### 9.3 改哪 2 处代码 + 1 份清单
+
+**① `wc.pages.json`（host 批次：不声明 `container`）**
+
+```jsonc
+{
+  "framework": "vue",
+  "rules": ["rules/domain.md"],                 // manifest 级规则（用法 A/B 通用）
+  "pages": [
+    { "name": "UserList",   "tag": "user-list",   "path": "/users",     "title": "用户列表",
+      "component": "src/pages/UserList.vue" },
+    { "name": "UserDetail", "tag": "user-detail", "path": "/users/:id", "title": "用户详情",
+      "component": "src/pages/UserDetail.vue" }
+  ]
+}
+```
+
+> 🔴 **硬约束**：`name` **必须等于你项目 `router` 里那条 route 的 `name`**（`router.hasRoute(name)` 校验；
+> 缺失时 init **不中断**，只 `console.warn` 一次性列出全部缺失名 —— 真实项目的页面路由常是登录后 /
+> 按权限才注册的；agent 导航到这类页面时返回结构化失败 `{ ok:false, reason:'not-found' }`，
+> 内核当前页与宿主 URL 都不动 —— 不会静默 404）。
+
+生成 manifest（不含 `containers`，页面也不含 `bundle`）：
+
+```bash
+pnpm analyze:host    # = mkdir -p public/wc && wc-analyze --config wc.pages.json --out public/wc/manifest.json
+# 或接进 vite dev 热更新（页面源码 / 规则改动即重写 manifest）：
+# wcManifestPlugin({ configPath: 'wc.pages.json', outPath: 'public/wc/manifest.json' })
+```
+
+**② `vite.config.ts`：`/ws` 代理（manifest 由宿主自己同源提供，**不需要** `/wc` 代理）**
+
+```ts
+server: { proxy: { '/ws': { target: 'ws://localhost:3000', ws: true } } }
+```
+
+**③ 宿主入口（`App.vue` / `main.ts`）：面板 + runtime**
+
+```vue
+<template>
+  <div class="shell">
+    <header>…宿主自己的导航…</header>
+    <router-view />                    <!-- ★ 页面还在这里，原样渲染 -->
+
+    <!-- ★★ 面板必须挂在 <router-view> 之外：挂路由组件里的话，agent 一导航它自己就被卸载 -->
+    <div class="wa-dock">
+      <WebAssistant
+        surface="host"
+        ws-base="/ws"
+        :create-runtime="({ initial }) => createVueHostRuntime({
+          router,                                   // 宿主真实 vue-router
+          app,                                      // 可选：provide runtime context 给页面
+          manifestUrl: '/wc/manifest.json',
+          observeNetwork: true,                     // 零侵入让 agent 看到接口数据
+          initial,
+        })"
+        @page-change="(info) => console.log(info)"
+      />
+    </div>
+  </div>
+</template>
+```
+
+`app` 需要在 `main.ts` 里创建并导出（`export const app = createApp(...)`），或者在 `App.vue` 内创建。
+
+### 9.4 开发 / 生产工作流
+
+```bash
+# 开发（不需要静态服务器、不需要 build:ce）
+pnpm dev                                  # 宿主自己（含 /ws 代理）
+pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
+#   或本地文件模式（mtime 热重载）：--manifest ./public/wc/manifest.json
+# 浏览器打开宿主 → 说话「打开用户列表」→ 地址栏变 /users，页面在你的 router-view 渲染
+```
+
+| 部署物 | 用法 A（容器/WC） | 用法 B（宿主直连） |
+|---|---|---|
+| 宿主 SPA 产物 | ✔ | ✔（页面代码本来就在里面） |
+| `dist-ce/`（容器 + 页面 bundle） | ✔ | ✘ |
+| `manifest.json` | ✔（另有静态服务器） | ✔（`public/wc/`，同源） |
+| 额外静态服务器 / CORS | ✔（8080 那套） | ✘ |
+| agent-server / `/ws` 反代 | ✔ | ✔（同一条命令） |
+
+### 9.5 能力对照（老项目视角）
+
+| 能力 | 用法 A（WC） | 用法 B（host） |
+|---|---|---|
+| 页面代码改动 | JS 层面零改动（编译期转 CE） | **零改动**（连编译都不用） |
+| 路由参数 | runtime 归一成 props + memory router | 真实 `useRoute().params`（原生） |
+| agent 直传 props | element property（对象可用） | 旁路：页面读 `useRuntimeServices().pageProps` |
+| `defineExpose` → agent 调用 | 容器读 CE 的 `_instance.exposed` | 读真实实例的 `$.exposed` |
+| `defineEmits` → agent | 容器自动捕获 | ⚠️ **不自动捕获**，页面需 `useRuntimeServices().emit(...)` |
+| 接口数据 → agent | `apiBus`（改 http 封装一行） | `observeNetwork: true` 零侵入 |
+| 样式 / UI 库 | 容器内打包 + shadow 隔离 | 宿主自己的，无隔离问题 |
+| 登录 / 权限守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫 —— ⚠️ 被拒时 URL 挡住了，但 agent 当前仍拿到 `ok:true`（见 9.6 已知缺口） |
+| URL / 刷新 / 分享 | 宿主 URL 不变 | URL 就是当前页 |
+
+### 9.6 四条硬规矩（踩过）
+
+1. **面板挂在 `<router-view>` 之外**（布局外壳 / 悬浮层）。原来的「`/aiassistant` 路由内嵌 `<WebAssistant>`」在用法 B 下不成立：agent 一导航，面板随之卸载。
+2. **manifest `name` ↔ 宿主 route `name` 一一对应**（init 告警但不中断；缺名时导航返回 `not-found`）。
+3. **单实例**：`apiBus` / 网络观测是全局副作用，同页挂两个 `<WebAssistant>` 会互相抢占（第二个实例会打告警）。
+4. **agent 导航缺省 `replace`**，不污染用户历史；URL 会跟着变（这是设计意图：URL 与内核双向镜像，URL 为最终裁决）。
+
+**已知缺口（`wc-runtime-vue@0.3.0` 保留，待后续批次修）**：**宿主自己的守卫**（你项目 `router.beforeEach`
+里返回 `false` / 重定向）拒绝 agent 发起的导航时，真实 URL 会被挡住（这是对的），但**内核状态已经推进到
+目标页、agent 的 `navigate()` 仍拿到 `ok:true`**，二者会分裂。原因：vue-router 对被守卫中止的导航是
+`resolve` 成 `NavigationFailure`（不 reject），而它在桥里被吞掉了。
+**内核守卫**（`runtime.beforeEach`，即 6.4 的「守卫前移」）不受此影响 —— 那种情况返回
+`{ ok:false, reason:'aborted' }` 且 URL 不变。绕行办法：把「这个账号能不能去这一页」的判断写成
+`runtime.beforeEach`（内核守卫），而不是只写在宿主守卫里。
+
+### 9.7 验收清单（对着自己的项目跑一遍）
+
+- [ ] agent「打开 XX 页面」→ URL 变化 + 你自己的 `<router-view>` 渲染该页面 + 面板仍在
+- [ ] 用户点自己的导航 / 浏览器后退 → agent 侧收到 `page.navigated`（source=`host`）
+- [ ] `call_page_method` 调用到真实组件的 `defineExpose` 方法（返回值 / 异常都能回给 agent）
+- [ ] 页面接口数据能被 agent 看到（`observeNetwork` 或 `apiBus`）
+- [ ] manifest `name` 写错 → init 告警一次列出缺失名（不中断）；agent 导航返回
+      `{ ok:false, reason:'not-found' }`，URL 与内核当前页都不变
+- [ ] 内核守卫（`runtime.beforeEach`）拒绝某路由 → agent 导航返回 `{ ok:false, reason:'aborted' }`，URL 不变
+- [ ] 宿主**自己的**守卫拒绝某路由 → URL 不变（已知缺口：agent 当前仍拿 `ok:true`，见 9.6）

@@ -194,6 +194,36 @@ agent rt.navigate({ tag, params, source:'agent' })
 - 多个 runtime 共享同一个**容器 bundle 模块**时 adapter 是模块单例（内建 router 也共享）；
   `createVueRuntime({ container })` 走本地 adapter 模式则每个 runtime 独立。
 
+## 5.1 用法 B：宿主直连（`@webassistant/wc-runtime-vue/host-router`）
+
+```ts
+import { createVueHostRuntime } from '@webassistant/wc-runtime-vue/host-router'
+
+const makeRuntime = ({ initial }) => createVueHostRuntime({
+  router,                                  // 宿主真实 vue-router（绝不 addRoute）
+  app,                                     // 可选：provide runtime context 给页面
+  manifestUrl: '/wc/manifest.json',        // host 批次 manifest：无 containers / 无 pages[].bundle
+  observeNetwork: true,                    // 零侵入让 agent 看到页面接口数据
+  initial,
+})
+```
+
+- agent 的导航 → `router.replace/push`（`replace` 缺省，不污染用户历史）；页面在宿主自己的
+  `<router-view>` 渲染；宿主 router 的 `afterEach` 回流内核（`source: 'host'`）。
+  三机制与容器用法共用 `routerSync.ts` 一份（宿主版 `registerRoutes: false`）。
+- `canGoBack/canGoForward` 与 `back/forward/go` 委托宿主 history（`history.state.position/back/forward`）；
+  `router.go()` 无 Promise → 内核「等一次回流提交或超时」再判定，越界返回 `out-of-range`（不悬挂）。
+- `defineExpose` 读取：`currentRoute.matched[].instances.default` 的 **`$.exposed`**
+  （实测 Vue 3.5 的组件 ref 是 expose proxy；CE 那条路仍是 `_instance.exposed`）。
+- 已知限制（用法 B 专有）：
+  - `defineEmits` **不会**被自动捕获 → 页面用 `useRuntimeServices().emit()`
+  - 直传 props 只能走旁路 `context.pageProps`（`passProps: false` 可关）
+  - 单实例约束：`apiBus` / 网络观测是全局副作用，多实例会互相抢占（会打告警）
+  - 面板必须挂在 `<router-view>` 之外，否则会被 agent 导航卸载
+  - 用户手改地址栏 / 浏览器后退无法被内核拒绝（真实 URL 是最终裁决）
+  - 宿主**自己的**守卫拒绝 agent 导航时：URL 会被挡住，但内核已推进到目标页、agent 仍拿到 `ok:true`
+    （vue-router 的 `NavigationFailure` 是 resolve 不是 reject，被桥吞掉）；内核守卫被拒才有 `aborted`
+
 ## 6. 开发
 
 ```bash

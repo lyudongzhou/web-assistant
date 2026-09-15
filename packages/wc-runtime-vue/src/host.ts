@@ -7,6 +7,8 @@ export { createRuntime as createHostRuntime } from '@webassistant/wc-runtime-cor
 export type {
   ContainerStrategy,
   CreateRuntimeOptions as CreateHostRuntimeOptions,
+  HostSurface,
+  HostSurfaceRuntimeApi,
   NavigationResult,
   NavigationSource,
   NavigationTarget,
@@ -20,6 +22,7 @@ export type {
   RuntimeRoute,
   RuntimeServices,
   RuntimeStatus,
+  RuntimeSurfaceKind,
   RuntimeView,
   Unsubscribe,
 } from '@webassistant/wc-runtime-core'

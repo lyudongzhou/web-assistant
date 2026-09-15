@@ -19,13 +19,23 @@ import type {
   RuntimeRoute,
   RuntimeServices,
   RuntimeStatus,
+  RuntimeSurfaceKind,
 } from '@webassistant/wc-runtime-vue/host'
-import type { PageEventPayload, PageChangeInfo } from '../types.js'
+import type { PageEventPayload, PageChangeInfo, WebAssistantRuntimeContext } from '../types.js'
 import { resolveInitialTarget } from '../lib/initialPage.js'
 
 export interface UseRuntimeHostOptions {
   /** manifest 在 {wcBase}/manifest.json，产物在 {wcBase}/dist-ce */
   wcBase: () => string
+  /**
+   * 渲染面（用法）：`container`（缺省，WC 用法）/ `host`（宿主直连用法）。
+   */
+  surface?: RuntimeSurfaceKind
+  /**
+   * runtime 构造注入口。给了就用它造 runtime（host 模式必填，宿主在这里塞真实 router）；
+   * 不给则按 `wcBase` 拉 manifest + dist-ce（container 模式现状）。
+   */
+  createRuntime?: (context: WebAssistantRuntimeContext) => Runtime
   /**
    * 首屏是否自动打开页面：
    * - 缺省 / `false`：不自动打开 → 渲染区展示「欢迎页」（由用户对话或 agent 决定打开哪个页面）
@@ -157,12 +167,16 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     // runtime 默认会「自动打开 manifest 第一个页面」；chat-client 默认改为不打开（`initial: null`），
     // 让渲染区先展示欢迎页。宿主可用 `initialPage` 恢复/指定首屏页面。
     const initial = resolveInitialTarget(options.initialPage)
-    runtime = createHostRuntime({
-      manifestUrl: `${base}/manifest.json`,
-      assetBase: `${base}/dist-ce`,
-      services: options.services,
-      initial,
-    })
+    const surface = options.surface ?? 'container'
+    runtime = options.createRuntime
+      ? // host 模式（宿主直连）：runtime 由宿主注入（createVueHostRuntime）—— 面板不负责页面渲染
+        options.createRuntime({ base, initial: initial ?? null, surface } satisfies WebAssistantRuntimeContext)
+      : createHostRuntime({
+          manifestUrl: `${base}/manifest.json`,
+          assetBase: `${base}/dist-ce`,
+          services: options.services,
+          initial,
+        })
     runtimeRef.value = runtime
 
     // 调试模式：把 runtime 交给控制台（与容器同一条 getPageExposed 入口，便于手动触发一次调用）
@@ -220,8 +234,9 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     })
 
     try {
-      if (!mountEl.value) throw new Error('渲染容器未就绪')
-      await runtime.init(mountEl.value)
+      if (!options.createRuntime && !mountEl.value) throw new Error('渲染容器未就绪')
+      // host 模式没有面板内渲染区（页面在宿主自己的位置渲染）→ 不传挂载点
+      await runtime.init(options.createRuntime ? null : mountEl.value)
       routes.value = runtime.routes
       manifestSettled.value = true
     } catch (cause) {

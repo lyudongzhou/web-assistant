@@ -37,6 +37,7 @@ export type {
   RuntimeServices,
   RuntimeStatus,
   WebAssistantProps,
+  WebAssistantRuntimeContext,
   WebAssistantThemeVars,
   WelcomeCapability,
   WelcomeOverride,

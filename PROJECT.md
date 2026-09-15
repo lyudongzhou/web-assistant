@@ -220,6 +220,9 @@ webassistant/
 - 页面内老代码：`useRouter().push({ name, params })` → 容器内建 memory vue-router → RouterBridge → core。
 - 宿主不再需要自己维护 historyStack（旧 PageHost 的 hack 已删）。
 
+> ⚠️ 唯一例外：**宿主直连模式（用法 B，见 6.9）下真实 URL 是最终裁决** —— 用户能改地址栏 / 浏览器后退，
+> 内核无法拒绝。因此那里的语义是「URL 与内核**双向镜像**」，而不是内核独占真相。
+
 ### 6.4 vue-router 桥的三个机制（wc-runtime-vue/vueRouterBridge.ts）
 
 | 机制 | 做法 | 为何必须 |
@@ -398,6 +401,49 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
   路由表同步（哑组件 + addRoute）、guard 前移（core guard 挂 `beforeEach`）、
   防回环（`applying` **计数器**，因 vue-router 导航是异步的，布尔 flag 会被并发打穿）。
 
+### 6.9 用法 B：宿主直连（host surface —— agent 直接操作你项目自己的 router）
+
+除「容器 / WC 模式（**用法 A**）」外，runtime 还支持**宿主直连模式（用法 B）**：agent 的导航落到
+宿主自己的 vue-router，页面在宿主自己的 `<router-view>` 渲染 —— 不编译 WC、不建容器、不做样式隔离。
+
+- **内核 / 渲染面解耦（本次重构）**：`wc-runtime-core` 内部拆成
+  **内核**（`kernel.ts`：导航真相源 + 服务/状态/事件/观测/留痕 + 页面目录 + 视图状态机）与
+  **两个渲染面**（`surfaceContainer.ts` = WC 用法；`surfaceHost.ts` + `wc-runtime-vue/hostSurface.ts` = 宿主直连用法）。
+  扩展点只有两个：`PageSurface` 与 `RuntimeHistory`；对外 `createRuntime({ surface })` 与既有 API 不变
+  （缺省 `container`，行为与解耦前等价 —— 既有单测断言零改动）。
+- **一套代码两条用法**：容器与宿主共用同一份内核；vue-router 桥的三机制（guard 前移 / `applying` 防回环 /
+  回流 commit）抽在 `wc-runtime-vue/routerSync.ts` **一份**里，宿主版只是 `registerRoutes: false`（**绝不 addRoute**）。
+- **真相源语义（重要，见 6.3 的修订）**：宿主模式下真实 URL 是最终裁决 → 双向镜像：
+  内核导航 → `surface.render` → 桥 `apply` → `router.replace/push`；宿主 router 的 `afterEach` →
+  `commit({ source:'host' })` 回流内核；`canGoBack/canGoForward` 与 `back/forward/go` 直接委托宿主 history
+  （内核自身 entries 在宿主模式下只保留「当前页」一个槽位，不与真实 URL 发散）。
+- **首屏**：`adopt`（缺省开）把宿主**当前路由**纳入内核，agent 首轮决策就知道用户在哪个页面；
+  当前路由不在页面目录内（如登录页）则从空态开始；宿主模式不自动打开 manifest 第一个页面。
+
+| 面 | 用法 A（容器 / WC） | 用法 B（宿主直连） |
+|---|---|---|
+| 页面渲染位置 | 面板内渲染区（容器 shadow root） | 宿主自己的 `<router-view>` |
+| 需要的构建 | `wc.pages.json` + `vite.ce.config.ts` + `dist-ce/` | **无**（页面就是宿主组件） |
+| 路由参数 | 归一成 props + 内存 router | 真实 `useRoute().params` |
+| agent 直传 props | element property | 旁路 `useRuntimeServices().pageProps` |
+| `defineExpose` → agent | 容器读 CE 实例 | 读 `currentRoute.matched[].instances.default` 的 `$.exposed` |
+| `defineEmits` → agent | 容器自动捕获 CE 事件 | ⚠️ **不自动捕获**，页面需 `ctx.emit()` |
+| 接口数据 → agent | `apiBus`（改 http 封装）或 observer | `observeNetwork: true` 零侵入（同副本，最准） |
+| 样式 / UI 库 | 容器内打包 + shadow 隔离（有泄漏点要补） | 宿主自己的（无隔离问题） |
+| 登录 / 路由守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫（⚠️ 被拒时 URL 挡住，但 agent 仍拿 `ok:true` —— 已知缺口） |
+| URL / 刷新 / 分享 | 宿主 URL 不变（页面在面板内） | URL 就是当前页 |
+| 面板渲染区 | 有（欢迎页空态） | **无**（只显示状态；页面在宿主界面） |
+
+- **硬约束**：① 面板必须挂在 `<router-view>` **之外**（挂路由组件里会被 agent 导航卸载）；
+  ② manifest 的 `name` 必须等于宿主 route 的 `name`（init 一次性告警但**不中断**；缺失时导航返回
+  `{ ok:false, reason:'not-found' }`，内核状态与宿主 URL 都不动）；
+  ③ 单实例（`apiBus` / 网络观测是全局副作用）；④ agent 导航缺省 `replace`（不污染用户历史）。
+- **接入**：`createVueHostRuntime({ router, app, manifestUrl })` + `<WebAssistant surface="host" :create-runtime>`；
+  `wc.pages.json` **不声明 `container`**（analyzer 不写 `containers` / `pages[].bundle`）。
+  完整清单、部署物对照与验收步骤见 [docs/INTEGRATION_GUIDE.md §9](./docs/INTEGRATION_GUIDE.md)。
+- **验收台**：`pnpm dev:host`（demo-app 的 `host.html`）—— 与既有 SPA / WC 两条链路互不影响。
+- 设计文档：[openspec/changes/add-host-router-surface](./openspec/changes/add-host-router-surface/)（proposal / design / specs / tasks）。
+
 ## 七、关键踩坑与解法
 | 坑 | 现象 | 解法 |
 |---|---|---|
@@ -442,6 +488,14 @@ pnpm test            # core 67 + vue 12 单测
 pnpm preview:ce      # 静态服务器 8080 → 打开 http://localhost:8080/
                      # 页面里直接 import core 的 dist（import map），按钮驱动 agent 导航 / 返回 /
                      # setState / 错误路由，右侧日志实时打印 navigate / status / page-event / error
+
+# 方式 C：用法 B 验收台（宿主直连 —— agent 直接操作 demo-app 自己的 router）★ 新增
+pnpm analyze:host    # 生成 demo-app/public/wc/manifest.json（host 批次：无 containers / 无 bundle）
+pnpm dev:host        # 宿主 dev server → 打开 http://localhost:5173/host.html
+                     # 页面在 demo-app 自己的 <router-view> 渲染，右下角是悬浮对话面板
+                     # （面板挂在 router-view 之外，agent 导航不会把它卸载）
+pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
+                     # 或本地文件模式：pnpm dev:agent -- --manifest packages/demo-app/public/wc/manifest.json
 
 # 方式 B：完整对话链路
 pnpm preview:ce      # 终端1：静态服务器 8080

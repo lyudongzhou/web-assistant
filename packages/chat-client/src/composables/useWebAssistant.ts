@@ -22,8 +22,9 @@ import type {
   RuntimeRoute,
   RuntimeServices,
   RuntimeStatus,
+  RuntimeSurfaceKind,
 } from '@webassistant/wc-runtime-vue/host'
-import type { ChatMessage, PageChangeInfo, PageEventPayload } from '../types.js'
+import type { ChatMessage, PageChangeInfo, PageEventPayload, WebAssistantRuntimeContext } from '../types.js'
 import type { UseWelcomePageReturn } from './useWelcomePage.js'
 
 export interface UseWebAssistantOptions {
@@ -34,8 +35,21 @@ export interface UseWebAssistantOptions {
   /**
    * 首屏是否自动打开页面（默认 `false` → 渲染区展示欢迎页）：
    * `true` = 打开 manifest 第一个页面；字符串 = 打开指定 tag 的页面。
+   * host 模式（`surface: 'host'`）忽略它 —— 页面由宿主 URL 决定。
    */
   initialPage?: boolean | string
+  /**
+   * 渲染面（用法，缺省 `container`）：
+   * - `container`：WC 用法（页面编译成 Web Component，在面板渲染区显示）
+   * - `host`：宿主直连用法（agent 操作宿主真实 router，页面在宿主自己的 `<router-view>` 显示；
+   *   必须同时给 `createRuntime`）
+   */
+  surface?: RuntimeSurfaceKind
+  /**
+   * runtime 构造注入口（host 模式必填）。
+   * 例：`({ initial }) => createVueHostRuntime({ router, app, manifestUrl: '/wc/manifest.json', initial })`
+   */
+  createRuntime?: (context: WebAssistantRuntimeContext) => Runtime
   /** 注入业务 WC 的宿主能力（框架无关：request / t / getToken / theme / state / emit） */
   services?: RuntimeServices
   /** 页面切换回调（原 WebAssistant 的 'page-change' emit） */
@@ -156,6 +170,8 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     runtime: hostRuntime,
   } = useRuntimeHost({
     wcBase: () => wcBase,
+    surface: options.surface,
+    createRuntime: options.createRuntime,
     initialPage: options.initialPage,
     services: options.services,
     activityLimit: options.activityLimit,

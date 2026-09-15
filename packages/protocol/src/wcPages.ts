@@ -31,8 +31,14 @@ export type WcRuleEntry = string | { name?: string; content: string }
 export interface WcPagesConfig {
   /** 该批次的框架，决定容器 adapter 与产物名；缺省 vue */
   framework?: string
-  /** 容器入口文件路径（默认导出 adapter），构建成 containers/<framework>.js */
-  container: string
+  /**
+   * 容器入口文件路径（默认导出 adapter），构建成 containers/<framework>.js。
+   *
+   * **可省略**：省略即「宿主直连批次（用法 B）」—— 页面不编译成 WC、不需要容器，
+   * 只用来生成页面目录（manifest）：此时 analyzer / wcManifestPlugin 不写 `containers` 与 `pages[].bundle`；
+   * `wcVuePlugin` / `wcBuildPlugin`（WC 构建）仍**要求**声明 container。
+   */
+  container?: string
   /** 页面注册助手（包名或路径）；缺省 @webassistant/wc-runtime-vue */
   pageHelper?: string
   /** 跨容器共享样式（构建产物内的相对路径），写进 manifest.styles.shared */

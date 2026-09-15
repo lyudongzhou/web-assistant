@@ -85,9 +85,21 @@ function sameLocation(a: RuntimeLocation | null, b: RuntimeLocation): boolean {
   return a.tag === b.tag && JSON.stringify(a.params) === JSON.stringify(b.params)
 }
 
+export interface NavigationOptions {
+  /**
+   * 历史归属：
+   * - `internal`（缺省）：内核自己的 entries（container 模式的现状）
+   * - `external`：真实 URL 才是最终裁决（host 模式）。内核只维护「当前页」一个槽位，
+   *   但每次 commit 仍视为一次新导航（navigationId 更新，供 NetworkObserver 关联请求）
+   */
+  history?: 'internal' | 'external'
+}
+
 export function createNavigationController(
   routes: readonly RuntimeRoute[] = [],
+  options: NavigationOptions = {},
 ): NavigationController {
+  const externalHistory = options.history === 'external'
   let table: RuntimeRoute[] = [...routes]
   const guards = new Set<NavigationGuard>()
   const listeners = new Set<(location: RuntimeLocation, route: RuntimeRoute) => void>()
@@ -167,6 +179,14 @@ export function createNavigationController(
   }
 
   function pushEntry(location: RuntimeLocation, replace: boolean, duplicated: boolean): void {
+    // 外部历史（真实 URL 是最终裁决）：内核只维护「当前页」一个槽位，避免与宿主 history 发散；
+    // 但每次 commit 都是一次新导航 —— navigationId 必须更新，否则 NetworkObserver 无法关联请求。
+    if (externalHistory) {
+      entries = [location]
+      index = 0
+      navId = crypto.randomUUID()
+      return
+    }
     if (index >= 0 && (replace || duplicated)) {
       entries[index] = location
       return
