@@ -1,5 +1,12 @@
 # @webassistant/analyzer
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [258d331]
+  - @webassistant/protocol@0.2.0
+
 ## 0.1.3
 
 > 0.1.1 / 0.1.2 / 0.1.3 是同一份内容：发布时**本地网络侧的代理缓存**把刚上传的 tarball 误报成 404，

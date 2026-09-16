@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/wc-runtime-core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "框架无关的 WC runtime 定义层（契约 + 编排实现），由 @webassistant/wc-runtime-vue 衍生使用",
   "main": "./dist/index.js",

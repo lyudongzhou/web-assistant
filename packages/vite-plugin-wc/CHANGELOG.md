@@ -1,5 +1,14 @@
 # @webassistant/vite-plugin-wc
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [258d331]
+  - @webassistant/wc-runtime-core@0.3.0
+  - @webassistant/protocol@0.2.0
+  - @webassistant/analyzer@0.1.4
+
 ## 0.1.1
 
 ### Patch Changes
