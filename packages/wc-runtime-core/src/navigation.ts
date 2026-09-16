@@ -21,7 +21,7 @@ export interface NavigationController {
   readonly historySize: number
   /**
    * 当前导航的唯一 ID。每次 commit / go 产生一次新的导航（同一个重复 replace 不算），
-   * 供 NetworkObserver 把请求关联到产生它的那次页面导航（protocol 的 PageObservationContext.navigationId）。
+   * 供订阅方把「某一跳之后发生的事」关联到那次导航（如宿主转发给 agent 的上下文）。
    */
   readonly navigationId: string
   getRoute(tagOrNameOrPath: string): RuntimeRoute | undefined
@@ -90,7 +90,7 @@ export interface NavigationOptions {
    * 历史归属：
    * - `internal`（缺省）：内核自己的 entries（container 模式的现状）
    * - `external`：真实 URL 才是最终裁决（host 模式）。内核只维护「当前页」一个槽位，
-   *   但每次 commit 仍视为一次新导航（navigationId 更新，供 NetworkObserver 关联请求）
+   *   但每次 commit 仍视为一次新导航（navigationId 更新）
    */
   history?: 'internal' | 'external'
 }
@@ -180,7 +180,7 @@ export function createNavigationController(
 
   function pushEntry(location: RuntimeLocation, replace: boolean, duplicated: boolean): void {
     // 外部历史（真实 URL 是最终裁决）：内核只维护「当前页」一个槽位，避免与宿主 history 发散；
-    // 但每次 commit 都是一次新导航 —— navigationId 必须更新，否则 NetworkObserver 无法关联请求。
+    // 但每次 commit 都是一次新导航 —— navigationId 必须更新。
     if (externalHistory) {
       entries = [location]
       index = 0

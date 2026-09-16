@@ -68,11 +68,11 @@ const app = createApp({
                     router,
                     app, // 给了才能把 runtime context provide 进宿主 app（页面可用 useRuntimeServices）
                     manifestUrl: '/wc/manifest.json',
-                    // 零侵入让 agent 看到页面接口数据（host 模式下与页面同副本，最准）
-                    observeNetwork: true,
+                    // ⚠️ 这里**故意不**开启任何自动采集：runtime 不拦 fetch / XHR，
+                    //    agent 能看到什么，由宿主/页面在业务代码里显式 apiBus.report（见 utils/httpClient 的 reportData）。
                     services: {
                       // host 模式下页面本来就能用宿主自己的 http / store / i18n，
-                      // services 只用于「宿主主动补给 runtime」的通道（这里演示数据上报）
+                      // services 只用于「宿主主动补给 runtime」的通道（这里演示本地留痕）
                       reportApiData: (snapshot) =>
                         console.debug('[host-page-data]', snapshot.source, snapshot.data),
                     },

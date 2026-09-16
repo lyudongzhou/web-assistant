@@ -121,7 +121,7 @@ host 模式 SHALL 把 agent / 宿主直传的归一 props 通过响应式旁路�
 
 ### Requirement: 单实例约束
 
-host 模式 SHALL 在检测到同一页面存在多个 runtime 实例（apiBus / 网络观测为全局副作用）时给出告警，
+host 模式 SHALL 在检测到同一页面存在多个 runtime 实例（`apiBus` 上报通道是全局单例）时给出告警，
 避免两个面板互相抢占数据上报。
 
 #### Scenario: 同页挂载两个面板

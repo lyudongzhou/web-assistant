@@ -203,9 +203,17 @@ const makeRuntime = ({ initial }) => createVueHostRuntime({
   router,                                  // 宿主真实 vue-router（绝不 addRoute）
   app,                                     // 可选：provide runtime context 给页面
   manifestUrl: '/wc/manifest.json',        // host 批次 manifest：无 containers / 无 pages[].bundle
-  observeNetwork: true,                    // 零侵入让 agent 看到页面接口数据
   initial,
 })
+```
+
+- **agent 能看到什么由宿主决定**：runtime 不拦 fetch/XHR、不自动采集。
+  在需要的调用点 `apiBus.report({ source, data })` 显式上报（不调 = 零数据出网）。
+
+```ts
+import { apiBus } from '@webassistant/wc-runtime-vue'
+
+apiBus.report({ source: 'user-list', data: users.map((u) => ({ id: u.id, name: u.name })) })
 ```
 
 - agent 的导航 → `router.replace/push`（`replace` 缺省，不污染用户历史）；页面在宿主自己的
@@ -218,7 +226,7 @@ const makeRuntime = ({ initial }) => createVueHostRuntime({
 - 已知限制（用法 B 专有）：
   - `defineEmits` **不会**被自动捕获 → 页面用 `useRuntimeServices().emit()`
   - 直传 props 只能走旁路 `context.pageProps`（`passProps: false` 可关）
-  - 单实例约束：`apiBus` / 网络观测是全局副作用，多实例会互相抢占（会打告警）
+  - 单实例约束：`apiBus` 是全局单例，多实例会互相抢占（会打告警）
   - 面板必须挂在 `<router-view>` 之外，否则会被 agent 导航卸载
   - 用户手改地址栏 / 浏览器后退无法被内核拒绝（真实 URL 是最终裁决）
   - 宿主**自己的**守卫拒绝 agent 导航时：URL 会被挡住，但内核已推进到目标页、agent 仍拿到 `ok:true`

@@ -13,7 +13,6 @@ import {
 import type {
   NavigationResult,
   NavigationTarget,
-  NetworkObservation,
   Runtime,
   RuntimeErrorInfo,
   RuntimeRoute,
@@ -46,9 +45,10 @@ export interface UseRuntimeHostOptions {
   services?: RuntimeServices
   onPageChange?: (info: PageChangeInfo) => void
   onPageEvent?: (payload: PageEventPayload) => void
-  /** 页面网络观察事件（fetch/XHR 被拦截后回调；宿主可转给 agent-server，方案 B 一般不走此路） */
-  onNetworkObservation?: (observation: NetworkObservation) => void
-  /** 页面 apiBus.report() 上报的数据快照（方案 B 主通道：宿主转发给 agent-server） */
+  /**
+   * 显式上报的数据快照（调用方 `apiBus.report()` 触发；chat-client 转发给 agent-server）。
+   * 注意：runtime 不自动采集任何数据 —— 没有 report 就没有这里的回调。
+   */
   onPageData?: (snapshot: { page?: string; source: string; data: unknown; truncated: boolean; at: number }) => void
   /**
    * 页面 `defineExpose` 能力清单变化（runtime 广播 'page-exposed-changed'）。
@@ -207,10 +207,6 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     runtime.on('page-event', (payload) => {
       options.onPageEvent?.(payload)
       record({ kind: 'emit', tag: payload.tag, name: payload.event, args: payload.payload })
-    })
-    runtime.on('network-observation', (observation) => {
-      options.onNetworkObservation?.(observation)
-      record({ kind: 'network', tag: observation.page ?? undefined, name: observation.type, args: observation })
     })
     runtime.on('page-data', (snapshot) => {
       options.onPageData?.(snapshot)

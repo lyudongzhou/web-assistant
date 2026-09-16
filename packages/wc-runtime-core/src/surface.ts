@@ -9,7 +9,6 @@
 // 1. 内核不得引用容器 / 自定义元素 / bundle / 样式隔离等 WC 概念（只认本文件的接口）。
 // 2. 渲染面不得感知 agent / 协议 / WebSocket；它只渲染内核给的 view。
 // 3. 历史归属通过可选的 `history` 声明：不给 = 内核自己的 entries；给了 = 宿主真实历史是最终裁决。
-import type { NetworkObserver } from './observer.js'
 import type { MutableServicesRef } from './services.js'
 import type {
   NavigationResult,
@@ -93,13 +92,12 @@ export interface PageSurface {
 
 /**
  * 内核交给渲染面的句柄。渲染面拿到的都是「稳定引用」：
- * 路由表用 `routes()` 实时读（setRoutes 后立刻可见），servicesRef / observer 与内核同一份实例。
+ * 路由表用 `routes()` 实时读（setRoutes 后立刻可见），servicesRef 与内核同一份实例。
  */
 export interface KernelHandles {
   /** 框架无关导航 API（渲染面 provide 给页面 / 建桥用） */
   readonly navigation: RuntimeNavApi
   readonly servicesRef: MutableServicesRef
-  readonly observer: NetworkObserver
   /** 当前路由表（实时） */
   readonly routes: () => readonly RuntimeRoute[]
   /** 页面事件回传（容器接住 CE 事件后调它 → page-event） */

@@ -28,7 +28,7 @@ export type {
 } from '@webassistant/wc-runtime-core'
 
 export type { PageEventPayload } from '@webassistant/protocol'
-export type { NetworkObservation, NetworkObserver } from '@webassistant/wc-runtime-core'
+export { apiBus, type ApiReport } from '@webassistant/wc-runtime-core'
 
 // 宿主 store → CE 的快照桥（宿主侧）。**不引入 vue / pinia**：宿主只在需要时用，
 // 不会因为 import 本入口就把 vue 打进自己的产物。

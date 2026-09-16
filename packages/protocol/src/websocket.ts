@@ -4,10 +4,6 @@
 import type {
   ObservationMatch,
   PageDataSnapshot,
-  PageNetworkError,
-  PageNetworkRequest,
-  PageNetworkResponse,
-  PageNetworkTimeout,
 } from './observation.js'
 import type { NavigationSource } from './session.js'
 
@@ -17,10 +13,7 @@ export const CLIENT_MESSAGE = {
   ChatCancel: 'chat.cancel',
   ToolResult: 'tool.result',
   PageNavigated: 'page.navigated',
-  PageNetworkRequest: 'page.network.request',
-  PageNetworkResponse: 'page.network.response',
-  PageNetworkError: 'page.network.error',
-  PageNetworkTimeout: 'page.network.timeout',
+  PageData: 'page.data',
   PageEmit: 'page.emit',
   PageExposed: 'page.exposed',
   Ping: 'ping',
@@ -100,10 +93,6 @@ export interface PageNavigatedMessage {
   title?: string
 }
 
-export type PageNetworkRequestMessage = Omit<PageNetworkRequest, 'type'> & { t: 'page.network.request' }
-export type PageNetworkResponseMessage = Omit<PageNetworkResponse, 'type'> & { t: 'page.network.response' }
-export type PageNetworkErrorMessage = Omit<PageNetworkError, 'type'> & { t: 'page.network.error' }
-export type PageNetworkTimeoutMessage = Omit<PageNetworkTimeout, 'type'> & { t: 'page.network.timeout' }
 export type PageDataMessage = Omit<PageDataSnapshot, 'type'> & { t: 'page.data' }
 
 /**
@@ -142,10 +131,6 @@ export type ClientMessage =
   | ToolResultMessage
   | PageNavigatedMessage
   | PageDataMessage
-  | PageNetworkRequestMessage
-  | PageNetworkResponseMessage
-  | PageNetworkErrorMessage
-  | PageNetworkTimeoutMessage
   | PageEmitMessage
   | PageExposedMessage
   | PingMessage

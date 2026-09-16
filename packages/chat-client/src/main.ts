@@ -1,5 +1,14 @@
 // SPA demo 入口：vite proxy 把 /wc 代理到 demo-app 的静态服务器，/api /ws 代理到 agent-server。
 //
+// 本文件是「**demo 宿主**」—— 它同时演示本包的两个身份：
+//   ① 宿主：挂载 <WebAssistant>（`mountWebAssistant`）+ 自己的 pinia / services / 登录态
+//   ② 消费端 API：从本包 import 面板组件与 hooks；**上报通道 `apiBus` 也从本包导出**
+//
+// ⚠️ 数据上报的分工（新原则：runtime 不采集任何请求，谁想看谁显式上报）：
+//   - 页面数据（接口响应）→ 由**被服务项目**的页面代码在调用点上报（见 demo-app 的 reportData）
+//   - 宿主侧事实（登录态 / 宿主上下文 / 纯前端状态）→ 由**宿主**在这里上报（见下面 reportHostContext）
+//   两边都不调 = agent 侧一条业务数据都没有（只有 page.navigated / page.exposed 这类元信息）。
+//
 // —— 宿主 store → CE 页面 store（快照桥）本例 ——
 // 宿主有自己的 pinia（与批次里那份是**两个实例、两份 vue 副本**），
 // 用 createHostStorePusher 把每个 store 的 $state 推成 state 桥里的 `store:<id>` 快照；
@@ -8,7 +17,9 @@
 import { ref } from 'vue'
 import { createPinia, defineStore } from 'pinia'
 import { createHostStorePusher } from '@webassistant/wc-runtime-vue/host'
-import { mountWebAssistant } from './index.js'
+// apiBus：从本包导出（与 wc-runtime-vue / wc-runtime-core 是同一个全局单例）——
+// demo 宿主用它演示「宿主侧显式上报」，也顺带验证「只装 chat-client 也有上报入口」。
+import { apiBus, mountWebAssistant } from './index.js'
 import type { Runtime } from './types.js'
 import './style.css'
 
@@ -46,6 +57,28 @@ hostPinia.use(pusher.plugin)
 // store 要在 pinia 被 app.use 之后创建（pinia 插件才会生效）——所以先挂载，再取 store
 let auth: ReturnType<typeof useHostAuthStore> | null = null
 
+/**
+ * 宿主侧显式上报：把**宿主才知道的事实**交给 agent（登录态 / 角色 / 宿主上下文…）。
+ *
+ * - 这是「宿主 → agent」的唯一通道；**不调就没有数据出浏览器**（runtime 不自动采集任何请求）。
+ * - 报什么、报哪些字段，全由宿主在这里决定 —— 敏感值（token / 手机号）不要出浏览器。
+ * - 返回 `false` = 此刻没有 assistant 在监听（同一份代码跑在没挂面板的页面里时正常出现），
+ *   开发期用它自检「上报有没有生效」。
+ */
+function reportHostContext(trigger: 'ready' | 'login' | 'logout'): void {
+  const delivered = apiBus.report({
+    source: 'host-context',
+    data: {
+      // trigger 让 agent 知道「为什么现在有这份数据」（避免把人主动点击也当成页面事实）
+      trigger,
+      loggedIn: Boolean(auth?.user),
+      user: auth?.user ? { name: auth.user.name, role: auth.user.role } : null,
+      // ⚠️ 故意不给 token：报什么由宿主决定，凭证类字段一律不出浏览器
+    },
+  })
+  console.debug('[host-report]', `${trigger} →`, delivered ? 'delivered' : 'no-listener（未挂面板时会这样）')
+}
+
 mountWebAssistant(
   '#app',
   {
@@ -57,10 +90,11 @@ mountWebAssistant(
     showActivityLog: true,
     // 调试模式：暴露 globalThis.__waActivities / __waRuntime，控制台可直接手动触发一次页面方法调用
     debug: true,
-    // runtime 就绪 → 推手拿到句柄（之后 store 变更就会自动推到 CE）
+    // runtime 就绪 → 推手拿到句柄（之后 store 变更就会自动推到 CE）；顺带把宿主当前事实报给 agent
     onRuntimeReady: (runtime) => {
       runtimeHolder.runtime = runtime
       if (auth) pusher.push(auth)
+      reportHostContext('ready')
     },
     services: {
       request: async (url: string, init?: RequestInit) => {
@@ -73,6 +107,9 @@ mountWebAssistant(
       getToken: () => auth?.token ?? '',
       state: { user: { name: '宿主用户' } },
       emit: (event, payload) => console.info('[page-event]', event, payload),
+      // 消费侧钩子（与上面的生产侧 report 相对）：任何显式上报流经 runtime 后宿主也能拿到，
+      // 用于本地留痕 / 埋点；注意它**不**代表 agent 收到了什么。
+      reportApiData: (snapshot) => console.debug('[host-page-data]', snapshot.source, snapshot.data),
     },
   },
   // 宿主 pinia 必须在挂载前装上：否则 pinia 的 use(plugin) 还停在 pending 列表，store 创建时插件不会跑
@@ -96,6 +133,8 @@ loginBtn.style.cssText = 'padding:4px 10px;border:1px solid #d1d5db;border-radiu
 loginBtn.addEventListener('click', () => {
   auth?.login()
   label.textContent = `宿主 store：${auth?.user?.name ?? ''} / ${auth?.token ?? ''}`
+  // 宿主侧事实变了 → 显式报给 agent（登录态本身就是 agent 决策要用的上下文）
+  reportHostContext('login')
 })
 const logoutBtn = document.createElement('button')
 logoutBtn.textContent = '登出'
@@ -103,6 +142,7 @@ logoutBtn.style.cssText = loginBtn.style.cssText
 logoutBtn.addEventListener('click', () => {
   auth?.logout()
   label.textContent = '宿主 store：未登录'
+  reportHostContext('logout')
 })
 bar.append(label, loginBtn, logoutBtn)
 document.body.appendChild(bar)

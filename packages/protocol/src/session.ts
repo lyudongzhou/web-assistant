@@ -1,7 +1,7 @@
 // Agent session 的共享数据模型。
 // 连接可以断开，但 session 上下文独立存活；连接级 pending call 不持久化。
 
-import type { PageNetworkRequest, PageObservation } from './observation.js'
+import type { PageObservation } from './observation.js'
 
 export type AgentRunStatus =
   | 'running'
@@ -55,8 +55,6 @@ export interface AgentSession {
   lastSeenAt: number
   history: ChatTurn[]
   currentPage?: CurrentPage
-  /** request start 之后尚未收到终态的请求 */
-  pendingRequests: Map<string, PageNetworkRequest>
   recentObservations: PageObservation[]
   /**
    * 页面 `defineExpose` 能力清单缓存（tag → key 列表，最近一次覆盖）。

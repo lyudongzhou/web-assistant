@@ -13,10 +13,10 @@
 import { createEventBus, type EventBus } from './events.js'
 import { normalizeManifest } from './manifest.js'
 import { createNavigationController, type NavigationController } from './navigation.js'
-import { createNetworkObserver } from './observer.js'
 import { resolveProps } from './props.js'
 import { createServicesRef, type MutableServicesRef } from './services.js'
 import { apiBus } from './apiBus.js'
+import { sanitizeData } from './sanitize.js'
 import { matchDataSource, summarizeData } from './dataSources.js'
 import type { KernelHandles, PageSurface, SurfaceRenderContext } from './surface.js'
 import type {
@@ -51,6 +51,13 @@ async function loadManifestJson(
 /** 等一次导航提交的兜底超时（host 模式的 router.go 不返回 Promise） */
 const EXTERNAL_GO_TIMEOUT_MS = 400
 
+/**
+ * 显式上报数据的体积 / 深度硬上限（防 token 爆）。
+ * 这是**工程性保护**，不是业务裁剪 —— 业务裁剪请用页面 dataSources 声明，或在调用点自行处理。
+ */
+const REPORT_MAX_BYTES = 16 * 1024
+const REPORT_MAX_DEPTH = 4
+
 export interface KernelDeps {
   options: CreateRuntimeOptions
   /** 装配渲染面（由 runtime.ts 决定 container / host） */
@@ -67,34 +74,33 @@ export function createKernel(deps: KernelDeps): Runtime {
     history: wantsHostSurface ? 'external' : 'internal',
   })
 
-  // ---- NetworkObserver：拦截 fetch / XHR，广播 observation 事件 ----（默认关闭，避免无差别暴露）
-  const observer = createNetworkObserver({
-    context: () => ({
-      page: nav.current?.tag,
-      navigationId: nav.navigationId || undefined,
-    }),
-    autoStart: options.observeNetwork === true,
-  })
-  observer.on((observation) => bus.emit('network-observation', observation))
-
-  // ---- apiBus：页面手动上报 → 按当前路由的 dataSources 摘要 → page-data 事件 ----
+  // ---- apiBus：**显式**上报 → 可选 dataSources 裁剪 + 体积硬上限 → page-data 事件 ----
+  // ⚠️ runtime **不做任何自动采集**（不拦 fetch / XHR）。没人调 apiBus.report 就没有数据出浏览器 ——
+  //    这是有意的：数据出网的决定权完全在调用方（宿主 / 页面），不在 runtime。
   const detachApiBus = apiBus.attach((report) => {
     const page = nav.current?.tag
     const route = nav.currentRoute
-    const dataSources = route?.dataSources
+    // dataSources 是**可选**的额外裁剪：页面声明了、且 URL 命中才生效（未命中就不裁）。
+    const ds = report.url ? matchDataSource(report.url, route?.dataSources) : null
     let data = report.data
     let truncated = false
-    let source = report.url
-    if (dataSources?.length) {
-      const ds = matchDataSource(report.url, dataSources)
-      if (ds) {
-        source = ds.match
-        const summarized = summarizeData(report.data, ds)
-        data = summarized.data
-        truncated = summarized.truncated
-      }
+    if (ds) {
+      const summarized = summarizeData(report.data, ds)
+      data = summarized.data
+      truncated = summarized.truncated
+    } else {
+      // 调用方已显式决定报什么 → 原样透传，只施加体积 / 深度硬上限
+      const capped = sanitizeData(report.data, REPORT_MAX_BYTES, REPORT_MAX_DEPTH)
+      data = capped.data
+      truncated = capped.bodyTruncated
     }
-    const snapshot = { page, source, data, truncated, at: Date.now() }
+    const snapshot = {
+      page,
+      source: ds?.match ?? report.source ?? report.url ?? 'unknown',
+      data,
+      truncated,
+      at: Date.now(),
+    }
     bus.emit('page-data', snapshot)
     servicesRef.current.reportApiData?.(snapshot)
   })
@@ -390,7 +396,6 @@ export function createKernel(deps: KernelDeps): Runtime {
   const handles: KernelHandles = {
     navigation: navApi,
     servicesRef,
-    observer,
     routes: () => nav.routes,
     onPageEvent: (payload) => bus.emit('page-event', payload),
     broadcastExposed: (tag) => broadcastPageExposed(tag),
@@ -535,7 +540,6 @@ export function createKernel(deps: KernelDeps): Runtime {
       surface?.dispose()
       surface = null
       nav.dispose()
-      observer.dispose()
       servicesRef.dispose()
       bus.clear()
     },

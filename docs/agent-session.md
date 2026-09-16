@@ -90,8 +90,8 @@ type ClientMessage =
   | { t: 'chat.cancel' }                                          // 用户打断 agent
   | { t: 'tool.result'; id: string; ok: true; data: unknown }
   | { t: 'tool.result'; id: string; ok: false; error: string; timedOut?: boolean }
-  | { t: 'page.data'; tag: string; snapshot: PageDataSnapshot }    // 被动观察（用户自己操作产生）
-  | { t: 'page.network.request' | 'page.network.response' | 'page.network.error' | 'page.network.timeout' }
+  | { t: 'page.data'; page?: string; source: string; data: unknown; truncated: boolean; at: number }
+                                                                 // 显式上报（调用方 apiBus.report）
   | { t: 'page.emit'; tag: string; event: string; payload?: unknown; at?: number }  // 页面 defineEmits（通知面）
   | { t: 'page.exposed'; tag: string; keys: string[] }             // 页面 defineExpose 的方法名（执行面）
   | { t: 'page.navigated'; tag: string; params: Record<string, unknown>; source: 'page' | 'host' | 'agent' }
@@ -138,7 +138,8 @@ interface CallPageMethodToolArgs {
                     │   timeoutMs: 8000 }
 runtime.navigate ───┤ 渲染区可见地切到用户列表（keyword 已填入搜索框）
 页面 axios 请求 ────┤
-拦截器 → apiBus ────┤ core 按 dataSources 摘要（fields / maxRows / mask）
+页面 / 宿主显式上报 ┤ apiBus.report({ source, data })   ← 只有这一步才会把数据交给 agent
+core 侧 ────────────┤ 补 page/at + 体积硬上限（可选 dataSources 裁剪）
        ──tool.result▶ { id:'c1', ok:true,
                         data:{ tag:'user-list', rows:[{id:1,name:'张三',role:'管理员'}], truncated:false } }
                     │ LLM 观察到 id=1
@@ -289,45 +290,82 @@ tool-result 通道与**那次** tool 调用一一对应，模型无需识别 id�
 若选 A，建议在 `tool.result.data` 里区分失败阶段（`{ navigated:true, timedOut:true }`）以弥补它唯一的短板。
 若选 C，必须在 system prompt 里给出硬规则（如“需要数据就一定带 waitFor，read_page_data 仅用于读旧快照”）。
 
-## 6. 老项目的侵入点：`apiBus`（共 2 行）
+## 6. 数据上报：`apiBus`（**显式**调用）
 
-不用 `window` 全局，也不需要老项目的 http 封装能拿到 Vue context。
-利用已有的硬约束「**一个 framework 批次 = 一次构建**」：批次内 `@webassistant/wc-runtime-vue`
-是单模块实例，所以它导出的模块级 bus 在容器与所有页面/工具模块之间是同一个。
+> ### ⚠️ 实现现状（与本文档最初的「透明观察」设想不同）
+>
+> `NetworkObserver`（包装 `window.fetch` / `XMLHttpRequest` 做**全量**网络观测）**已退役并删除**。
+> 原因：在一个已有大量内部接口的真实站点（例如小红书这种宿主页面）上，
+> "拦下所有请求"天然会把不相关、甚至敏感的数据带出浏览器；靠事后的白名单 / 脱敏去补救
+> 既不可靠（fetch 分支曾漏检黑名单）、也难以维护，且要额外承担改写全局 fetch 的副作用
+> （阻塞流式响应、多实例抢占、stop 后残留包装等）。
+>
+> 现在的规则只有一条：**runtime 不采集任何东西 —— 谁想看，谁在调用点显式上报**。
+> 不调 = 零数据出浏览器，天然 fail-closed，也就不需要维护白名单。
+
+`apiBus` 是唯一的数据上报通道。导出位置：
+
+- `@webassistant/wc-runtime-core`（`index.ts` 导出 `apiBus` / `ApiReport`）
+- `@webassistant/wc-runtime-vue`（宿主门面转出同一个全局单例）
+- **`@webassistant/chat-client`**（也转出 `apiBus`：只装 chat-client 的宿主——用法 A/容器模式——不必为了上报再引一个包）
+- 页面内：`useRuntimeServices().reportApiData(payload)`（内部即 `apiBus.report`）
 
 ```ts
-// ① 老项目的 http 封装（唯一侵入点）
 import { apiBus } from '@webassistant/wc-runtime-vue'
 
-http.interceptors.response.use((res) => {
-  apiBus.report({ url: res.config.url, method: res.config.method, data: res.data })  // ← 加这一行
-  return res
-})
-
-// ② 批次容器入口（container.ts）
-export default defineVueContainer({
-  setup(context) {
-    apiBus.attach(context.reportApiData)   // ← 加这一行
-  },
+// 在「你愿意公开这份数据」的那个调用点上报一次（宿主 / 页面都可以）
+apiBus.report({
+  source: 'user-list',   // 来源标识（会出现在 agent prompt 的「来源：」处）
+  data: users.map((u) => ({ id: u.id, name: u.name, role: u.role })),  // 字段自己挑
 })
 ```
 
-之后的脏活全由 **core** 干（老项目不关心）：
+- **不必**再调 `apiBus.attach()`：runtime 建内核时已经 attach，调用方只负责 `report`。
+- **不自动**：没有"axios 拦截器里统一上报"这种做法 —— 想报就报，不报就没有任何数据出浏览器。
+- **不做业务脱敏**：runtime 只补 `page` / `at` 并施加体积硬上限（16KB / 深度 4），
+  字段选择与脱敏由调用点在调用时决定。
 
-1. 补上当前 `tag`（core 知道 `nav.current()`）
-2. 按 `manifest.dataSources[].match` 匹配 url，**未命中直接丢弃**
-3. 按 `fields` / `maxRows` / `mask` 摘要 —— **敏感字段不出浏览器**
-4. 命中某个 `waitFor` 的 → resolve 对应 `tool.call`；否则 → 以 `page.data` 推送进 session
+runtime 侧随后只做三件事：
+
+1. 补上当前 `tag` 与 `at`；
+2. 若该页 manifest 声明了 `dataSources` 且 URL 命中 → 按 `fields` / `maxRows` / `mask` **额外**裁剪
+   （可选加固，**不是**隐私边界）；
+3. 以 `page.data` 推送进 session（`wait_for_observation` 用 `source` / `contains` 匹配它）。
 
 ```ts
-// apiBus 的形状（框架无关，非 axios 的封装也能调）
-interface ApiReport { url?: string; method?: string; data: unknown; status?: number }
+// apiBus 的形状（框架无关，任何 http 封装都能调）
+interface ApiReport {
+  data: unknown          // 你愿意公开的内容（必填）
+  source?: string        // 来源标识；缺省回退到 url
+  url?: string           // 原始 URL（可选）：给了才能命中 dataSources 做额外裁剪
+  method?: string
+  page?: string          // runtime 自动补
+}
+/* 消费端只有一处：runtime 内核（createKernel 时 attach）。
+   业务侧要「把数据交给 agent」永远只调 report() —— 自己调 attach() 会顶掉内核的 sink
+   （apiBus 是单 sink，覆盖时会 console.warn 提示）。
+   帧内各副本（chat-client / 页面 bundle / 宿主）拿到的是**同一个全局单例**（Symbol.for + globalThis）。 */
 interface ApiBus {
-  report(payload: ApiReport): void
-  attach(sink: (payload: ApiReport) => void): () => void   // 容器接入；未 attach 时 report 静默丢弃
+  report(payload: ApiReport): boolean                  // true = 有 runtime 在监听；false = 没人听（静默丢弃）
+  attach(sink: (payload: ApiReport) => void): () => void   // 仅 runtime 内核使用
+  readonly attached: boolean
 }
 ```
 
+> **`apiBus` 的 import 从哪来**：`@webassistant/wc-runtime-vue`（用法 B 宿主本来就有）或
+> `@webassistant/chat-client`（用法 A 只装面板时的转出，二者是**同一个全局单例**）。
+> 页面内也可用 `useRuntimeServices().reportApiData(payload)`。
+>
+> **谁该调 `report`**（典型分工）：
+> - 页面 / 被服务项目：报**接口数据**（它的调用点才知道拿到什么）；
+> - **宿主**：报**宿主才知道的事实**（登录态、角色、宿主上下文、纯前端状态）——
+>   页面拿不到这些，宿主不报 agent 就不知道；
+> - 两边的共同约束：不调 = 零数据出网；报什么字段 = 调用点自己挑。
+>
+> `report()` 返回 `false` 意味着**当前没有 assistant 在监听**（例如同一份页面代码跑在没有挂
+> `<WebAssistant>` 的 SPA 里）—— 静默丢弃、无副作用，但开发期可以用返回值自检"上报到底有没有生效"。
+> 消费端只有 runtime 内核一处（`createKernel` 时 `attach`）；业务侧**不要**自己调 `attach()`
+> （单 sink 语义，会顶掉内核，覆盖时会 `console.warn` 提示）。
 > 未 attach 就静默丢弃，意味着老项目在**自己的 SPA 里跑**时这行代码无副作用。
 
 ## 7. manifest 扩展：`dataSources`
@@ -464,8 +502,8 @@ agent-server/src/
 | 风险 | 对策 |
 |---|---|
 | ReAct 挂死 | 每个 `tool.call` 有 `timeoutMs` + 总步数上限 + 单轮总时长上限（D8） |
-| token 爆炸 | `dataSources.fields/maxRows` 前端截断 + session 只留最近 3 个页面快照 + history 压缩 |
-| 隐私 | `mask` 字段在浏览器侧就抹掉；`fields` 白名单（未声明字段一律不上报） |
+| token 爆炸 | `apiBus` 上报在 runtime 侧有体积 / 深度硬上限（16KB / 深度 4）+ session 只留最近 100 条观察 + history 压缩 |
+| 隐私 | 出网的数据只来自**调用点显式** `apiBus.report`（不调 = 零数据出网）；`dataSources.fields/mask` 是可选的额外加固 |
 | 用户中途干预 | 遮罩 + `chat.cancel`；`page.navigated` 让 agent 知道页面被人改了 |
 | 断线 | session 存活、`pendingCalls` 判超时；重连 `session.hello` 恢复 |
 | manifest 版本漂移 | `session.hello` 带 `manifestVersion`，不一致时提示重建 |

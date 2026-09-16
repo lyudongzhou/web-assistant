@@ -8,10 +8,10 @@
 //
 // 为什么用 Symbol.for + globalThis：容器 bundle 与宿主 bundle 是两份模块副本（同 apiBus.ts 的思路），
 // 模块级变量会各持一份，导致「容器上报、宿主订阅」失联；挂到全局才是唯一真相源。
-import { sanitizeData } from './observer.js'
+import { sanitizeData } from './sanitize.js'
 
 /** 活动类型：call 是唯一的「执行」；其余是「发生了什么」 */
-export type WcActivityKind = 'call' | 'navigate' | 'emit' | 'data' | 'exposed' | 'network' | 'error'
+export type WcActivityKind = 'call' | 'navigate' | 'emit' | 'data' | 'exposed' | 'error'
 
 /** 调用来源：agent（call_page_method）还是宿主/页面自身代码 */
 export type WcActivityOrigin = 'agent' | 'host'
@@ -160,7 +160,7 @@ export const activityBus: ActivityBus = {
   },
 }
 
-/** 脱敏 + 截断（复用 observer 的深拷贝实现；truncated 标记会内联进返回值） */
+/** 脱敏 + 截断（复用 sanitizeData 的深拷贝实现；truncated 标记会内联进返回值） */
 function sanitizeValue(value: unknown): unknown {
   if (value === undefined || value === null) return value
   if (typeof value !== 'object') return value

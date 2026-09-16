@@ -6,15 +6,16 @@
 
 ## 0. 设计约束
 
-- [ ] 业务页面不调用 `reportApiData()`、`apiBus.report()`，不感知 Agent/WebSocket。
+- [x] 业务页面不感知 Agent/WebSocket 协议；**数据上报由宿主侧代码显式调用** `apiBus.report()`。
 - [ ] 页面继续按自身逻辑请求接口、渲染数据和处理交互。
 - [ ] manifest 只描述页面能力和输入约束：`description`、`props`、`params`、可选事件。
 - [ ] `dataSources` 不作为页面必须实现的反馈协议；如保留，只做可选观察/安全策略。
 - [ ] 不要求 `page.ready` 或页面加载完成事件。
 - [ ] `render` 只发起导航并立即返回 accepted，不等待页面或接口完成。
-- [ ] Runtime/宿主透明观察 `request`、`response`、`error`、`timeout` 和导航。
-- [ ] Agent 等待证据，不等待 page ready；请求错误立即结束等待。
-- [ ] 页面无请求、组件直接报错或无有效观察结果时，用 observation timeout 托底。
+- [x] **Runtime 不做透明观察**（不拦 fetch/XHR）：不调 `apiBus.report` 就没有任何数据出浏览器；
+      自动网络观测（`NetworkObserver` / `page.network.*`）已退役删除。
+- [ ] Agent 等待证据，不等待 page ready；上报的数据里出现错误信息时立即结束等待。
+- [ ] 页面无上报、组件直接报错或无有效观察结果时，用 observation timeout 托底。
 - [ ] timeout、error、空结果不能让 Agent 猜测业务数据。
 - [ ] 超时后的晚到响应可写入 Session，但不能自动重启已结束的 AgentRun。
 - [ ] 所有 AgentRun、Tool RPC、观察等待和网络请求都必须有边界和清理逻辑。
@@ -26,7 +27,8 @@
 - [ ] 将 WebSocket 定义为唯一通信链路，移除其他传输和迁移描述。
 - [ ] 将 `dataSources` 改为可选观察/安全策略，或从 MVP 移除。
 - [ ] 定义 `render` accepted 语义和 `wait_for_observation` 工具。
-- [ ] 增加事件：`page.network.request`、`page.network.response`、`page.network.error`、`page.network.timeout`、`page.observation.timeout`。
+- [x] ~~增加事件：`page.network.request`、`page.network.response`、`page.network.error`、`page.network.timeout`、`page.observation.timeout`。~~
+      → **已废弃**：前 4 个随自动网络观测一起退役；数据只走显式上报的 `page.data`（`page.observation.timeout` 仍是概念，未落到 wire）。
 - [ ] 区分 Tool（Agent 操作）与 Observation（Runtime 事实）。
 - [ ] 补充请求错误、无请求、页面报错、超时、晚到响应时序。
 - [ ] 明确等待结果为 `completed`、`failed`、`timed_out`，并限制重试。
@@ -46,7 +48,7 @@
 - [x] 新增 `observation.ts`，定义 request/response/error/timeout/可见内容类型。
 - [x] 网络事件包含 `requestId`、页面、`navigationId`、method、URL、时间和状态。
 - [x] 定义 `AgentSession`、`ChatTurn`、当前页面、pending request、观察结果、AgentRun。
-- [x] 定义客户端消息：`session.hello`、`chat.send`、`chat.cancel`、`tool.result`、`page.navigated`、`page.network.*`、`ping`。
+- [x] 定义客户端消息：`session.hello`、`chat.send`、`chat.cancel`、`tool.result`、`page.navigated`、`page.data`、`page.emit`、`ping`。
 - [x] 定义服务端消息：`session.ready`、`chat.text`、`agent.step`、`tool.call`、`chat.done`、`chat.error`、`pong`。
 - [x] `tool.call` 携带 id、工具名、args、timeout；`tool.result` 支持成功/失败/超时。
 - [x] 未知消息忽略并记录日志；未知工具返回 `unsupported tool`。
@@ -109,17 +111,21 @@
 - [ ] Prompt 注入 pending 请求、事件和剩余等待时间（待后续补全）。
 - [ ] Agent 规则：缺少 id 时寻找支持 keyword 的候选列表页；render 后不假设完成；必要时 wait；失败/超时可有限重试、换策略或询问；只使用观察结果确认的 ID。
 
-## 5. Runtime 透明观察
+## 5. 数据上报（原「Runtime 透明观察」—— 已改向）
 
 目录：`/Users/lvdongzhou/codePersonal/webassistant/packages/wc-runtime-core/`
 
-- [x] 定义框架无关 `NetworkObserver`，支持 start/stop、订阅、dispose 和当前 navigationId。
-- [x] 包装 `window.fetch`：保留原行为，发 request/response/error/timeout，销毁时恢复。
-- [x] 包装 XMLHttpRequest 的 `open/send`，监听 load/error/timeout，销毁时恢复。
-- [ ] 可解析 JSON 时提取数据；非 JSON/流式 body 只记录元信息。
-- [ ] 默认不上传 Cookie、Authorization、Token；限制响应大小、行数、频率，支持脱敏/URL 黑名单。
-- [ ] 防止重复安装、重复终态、旧页面请求污染 currentPage，并标记 late response。
-- [ ] 无法读 body 时仍记录 URL、状态和错误；明确浏览器 CORS 限制。
+**决定（已实施）**：不做透明观察。`NetworkObserver`（包装 `window.fetch` / `XMLHttpRequest` 全量观测）
+已删除，`page.network.*` 四条 wire 消息、`observeNetwork` 选项、`pendingRequests`、prompt 里的网络分支
+一并退役。理由见 `docs/agent-session.md` §6：全量拦截宿主页面请求会把不相关/敏感数据带出浏览器，
+靠事后白名单补救不可靠；改为**调用点显式上报**后，不调 = 零数据出网。
+
+- [x] ~~定义框架无关 `NetworkObserver`~~ → **已删除**（连同 fetch/XHR 包装）。
+- [x] 数据上报唯一通道：`apiBus.report({ source, data })`（`apiBus.ts`；`report()` 返回 boolean 便于自检）。
+- [x] runtime 侧只做元信息补充（`page` / `at`）+ 体积硬上限（16KB / 深度 4）。
+- [x] `dataSources` 降级为**可选**加固（命中才裁）；未声明即原样透传。
+- [x] 单测锁死行为：`test/report.test.js`（不改写全局 fetch / 不调 report 无数据 / 命中裁剪 / 未命中透传 / 超限截断 / dispose 后 detach）。
+- [ ] 后续（若需要）：`page.observation.timeout` 结构化超时事件落到 wire。
 
 ## 6. Runtime Tool 执行与 chat-client
 
@@ -181,8 +187,8 @@ session.hello → session.ready → chat.send
 → Agent 读取 manifest
 → render(user-list, keyword=张三)
 → 客户端立即返回 accepted
-→ page.network.request
-→ page.network.response
+→ 页面 / 宿主显式 apiBus.report({ source: 'user-list', data })
+→ page.data（含 id）
 → Agent 读取 id
 → render(user-detail, id=1)
 → chat.done
@@ -191,9 +197,7 @@ session.hello → session.ready → chat.send
 必须同时通过：
 
 ```text
-page.network.error
-page.network.timeout
-page.observation.timeout
+page.observation.timeout（无任何上报时的托底）
 chat.cancel
 WebSocket 断线重连
 ```

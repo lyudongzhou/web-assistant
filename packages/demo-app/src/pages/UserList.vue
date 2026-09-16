@@ -95,6 +95,7 @@ import { ref, reactive, computed, onMounted, watch, type PropType } from "vue";
 import { useRouter } from "vue-router";
 import { tryUseRuntimeServices } from "@webassistant/wc-runtime-vue";
 import { http } from "../utils/request";
+import { reportData } from "../utils/httpClient";
 import { useUserStore } from "../stores/userStore";
 import type { User } from "../data";
 import TestCmp from "../components/TestCmp.vue";
@@ -126,8 +127,8 @@ const page = ref(1);
 const pageSize = 5;
 
 // 页面数据：通过 http 从 mock API 拉取。
-// 现在 http 已被容器 setup 的 setHttp(axios 实例) 接管，axios 拦截器会自动 apiBus.report，
-// 所以这里**不需要再手动上报**（dataSources 白名单在 runtime 侧过滤）。
+// agent 侧要看到这份数据 = 在下面的调用点**显式** reportData；不调就没有任何数据出浏览器，
+// 也没有任何人替页面「自动」上报（runtime 不拦请求）。
 const allUsers = ref<User[]>([]);
 
 async function fetchUsers(name?: string) {
@@ -135,7 +136,13 @@ async function fetchUsers(name?: string) {
     const url = name
       ? `/api/users?name=${encodeURIComponent(name)}`
       : "/api/users";
-    allUsers.value = await http<User[]>(url);
+    const list = await http<User[]>(url);
+    allUsers.value = list;
+    // 显式上报给 agent：只给 id / name / role（邮箱不给），agent 据此拿到可继续操作的 id
+    reportData(
+      "user-list",
+      list.map((u) => ({ id: u.id, name: u.name, role: u.role })),
+    );
   } catch {
     allUsers.value = [];
   }

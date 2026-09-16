@@ -40,8 +40,7 @@ export interface AgentSocket {
   sendToolResult(result: ToolResultMessage): void
   /** 转发页面导航事件 */
   sendPageNavigated(payload: { tag: string; params: Record<string, unknown>; source: NavigationSource; navigationId?: string; title?: string }): void
-  /** 转发页面网络观察事件（仅 4 种网络类型会被发送） */
-  sendObservation(observation: { type: string }): void
+  /** 转发**显式上报**的数据快照（调用方 apiBus.report → ws page.data） */
   sendPageData(snapshot: { page?: string; source: string; data: unknown; truncated: boolean; at: number }): void
   /** 转发页面 Vue `defineEmits` 事件（通知面第二条腿） */
   sendPageEmit(payload: { tag: string; event: string; payload?: unknown; at?: number }): void
@@ -224,15 +223,6 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     sendPageNavigated(payload) {
       sendRaw({ t: 'page.navigated', tag: payload.tag, params: payload.params,
         source: payload.source, navigationId: payload.navigationId, title: payload.title })
-    },
-    sendObservation(observation) {
-      // 只转发 4 种网络观察（runtime 只产出这几种；page.visible 等无 wire 通道）
-      const NETWORK_TYPES: readonly string[] = [
-        'page.network.request', 'page.network.response', 'page.network.error', 'page.network.timeout',
-      ]
-      if (!NETWORK_TYPES.includes(observation.type)) return
-      const { type, ...rest } = observation
-      sendRaw({ t: type as ClientMessage['t'], ...rest } as ClientMessage)
     },
     sendPageData(snapshot) {
       sendRaw({ t: 'page.data' as ClientMessage['t'], ...snapshot } as ClientMessage)

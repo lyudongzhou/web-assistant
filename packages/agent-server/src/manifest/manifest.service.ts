@@ -216,19 +216,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     if (recentObservations && recentObservations.length > 0) {
       lines.push('', '最近页面观察结果（来自当前 Session）：')
       for (const obs of recentObservations.slice(-20)) {
-        if (obs.type === 'page.network.request') {
-          lines.push(`  [网络请求] ${obs.method} ${obs.url} — 请求中${obs.page ? `（页面：${obs.page}）` : ''}`)
-        } else if (obs.type === 'page.network.response') {
-          const status = 'status' in obs ? obs.status : '?'
-          const dataPreview = 'data' in obs && obs.data !== undefined
-            ? ` 数据：${JSON.stringify(obs.data).slice(0, 500)}`
-            : ''
-          lines.push(`  [网络响应] ${obs.method} ${obs.url} → ${status}${dataPreview}${obs.page ? `（页面：${obs.page}）` : ''}`)
-        } else if (obs.type === 'page.network.error') {
-          lines.push(`  [网络错误] ${obs.method} ${obs.url} ✘ ${obs.error}${obs.page ? `（页面：${obs.page}）` : ''}`)
-        } else if (obs.type === 'page.network.timeout') {
-          lines.push(`  [网络超时] ${obs.method} ${obs.url} ⏱${obs.page ? `（页面：${obs.page}）` : ''}`)
-        } else if (obs.type === 'page.data') {
+        if (obs.type === 'page.data') {
           // 方案 B 核心：页面手动上报的数据快照，agent 可直接读取
           const dataPreview = JSON.stringify(obs.data).slice(0, 800)
           lines.push(`  [页面数据] 来源：${obs.source}${obs.page ? `（页面：${obs.page}）` : ''} 数据：${dataPreview}`)

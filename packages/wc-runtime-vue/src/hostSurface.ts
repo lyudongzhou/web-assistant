@@ -178,7 +178,6 @@ export function createVueHostSurface(options: VueHostSurfaceOptions): VueHostSur
         api.servicesRef,
         api.navigation,
         state,
-        api.observer,
         pageProps,
       )
       // 只注入 runtime context：**不**用 provideRuntimeContext（那会顶掉宿主自己的 $tt / $t）

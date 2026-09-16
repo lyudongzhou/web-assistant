@@ -32,7 +32,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch, type PropType } from "vue";
 import { useRoute } from "vue-router";
-import { apiBus } from "@webassistant/wc-runtime-vue";
+import { reportData } from "../utils/httpClient";
 import { http } from "../utils/request";
 import type { User } from "../data";
 
@@ -59,7 +59,7 @@ function resolveId(): string | undefined {
   return String(raw);
 }
 
-// 通过 http 从 mock API 拉取用户（NetworkObserver 透明拦截，agent 可观察）
+// 通过 http 从 mock API 拉取用户（agent 能否看到，取决于下面是否显式上报）
 async function fetchUser(id: string) {
   loading.value = true;
   loadError.value = "";
@@ -68,8 +68,8 @@ async function fetchUser(id: string) {
     const user = await http<Partial<User>>(url);
     if (user && (user.name || user.email || user.role)) {
       Object.assign(form, user);
-      // 手动上报给 agent（方案 B：apiBus）
-      apiBus.report({ url, data: user, method: "GET" });
+      // 显式上报给 agent：只给 id / name / role（先自己挑字段，别把整个响应丢出去）
+      reportData("user-detail", { id, name: user.name, role: user.role });
     } else {
       loadError.value = `未找到用户 id=${id}`;
     }

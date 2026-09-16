@@ -12,7 +12,6 @@ export type Unsubscribe = () => void
 
 // manifest 的线上 schema 由 @webassistant/protocol 定义（analyzer 产出、core 消费、agent-server 读取）
 import type { ManifestDataSource, ManifestParam, ManifestProp, RuntimeManifestInput } from '@webassistant/protocol'
-import type { NetworkObservation, NetworkObserver } from './observer.js'
 
 export type RouteParamDef = ManifestParam
 export type RoutePropDef = ManifestProp
@@ -34,7 +33,10 @@ export interface RuntimeRoute {
   params: RouteParamDef[]
   props: RoutePropDef[]
   events: string[]
-  /** 页面可上报的数据源（apiBus 摘要白名单 + agent 规划依据） */
+  /**
+   * 页面**可选**的数据源声明：命中时 runtime 会对显式上报的数据做字段白名单 / 脱敏 / 行数截断。
+   * 注意：它是「额外加固」，**不是**隐私边界 —— 隐私边界是「调用方只在调用点报愿意公开的内容」。
+   */
   dataSources?: ManifestDataSource[]
   meta: Record<string, unknown>
 }
@@ -162,7 +164,7 @@ export interface RuntimeServices {
   /** 宿主业务状态的纯数据快照（只读消费，变更走 runtime.setState） */
   state?: Record<string, unknown>
   extras?: Record<string, unknown>
-  /** 页面通过 apiBus.report() 上报的数据快照回调（宿主 / chat-client 注册后转发给 agent-server） */
+  /** 调用方显式 `apiBus.report()` 上报的数据快照回调（宿主可注册做本地留痕；chat-client 转发给 agent-server） */
   reportApiData?: (snapshot: {
     page?: string
     source: string
@@ -195,11 +197,6 @@ export interface DefineContainerOptions {
   /** 框架无关导航 API，容器需 provide 给页面 */
   navigation: RuntimeNavApi
   /**
-   * 网络观察器。拦截 fetch / XHR 后把 request/response/error/timeout 广播给宿主，
-   * 宿主再通过 ws 发给 agent-server，让 agent "看到"页面数据。
-   */
-  observer: NetworkObserver
-  /**
    * 页面 emit 的事件回传通道。容器监听自己 shadow root 内冒泡的 CustomEvent
    * （Vue CE 的 emit 默认 composed:false，正好被容器接住），转成 runtime 的 page-event。
    */
@@ -212,8 +209,6 @@ export interface PageApi {
   servicesRef: ServicesRef
   navigation: RuntimeNavApi
   framework: string
-  /** 网络观察器（与容器同一实例；页面也可订阅，但一般用不到） */
-  observer: NetworkObserver
 }
 
 /** 页面 bundle 的模块形状（由 vite-plugin-wc 生成） */
@@ -263,7 +258,6 @@ export interface HostSurfaceRuntimeApi {
   readonly servicesRef: ServicesRef
   /** 框架无关导航 API */
   readonly navigation: RuntimeNavApi
-  readonly observer: NetworkObserver
   /** 当前页面目录（实时）—— 宿主可用它判断「当前路由是否在目录内」 */
   readonly routes: () => readonly RuntimeRoute[]
   /**
@@ -356,9 +350,7 @@ export interface RuntimeEventMap {
   }
   status: { status: RuntimeStatus; tag: string | null }
   'page-event': { tag: string; event: string; payload?: unknown }
-  /** 页面网络观察事件（fetch / XHR 被拦截后广播；宿主可转成 ws 的 page.network.*） */
-  'network-observation': NetworkObservation
-  /** 页面通过 apiBus.report() 上报的数据快照（宿主可转成 ws 的 page.data） */
+  /** 调用方显式 `apiBus.report()` 上报的数据快照（宿主可转成 ws 的 page.data） */
   'page-data': {
     page?: string
     source: string
@@ -409,8 +401,6 @@ export interface CreateRuntimeOptions {
   initial?: NavigationTarget | null
   /** 初始化时是否预加载全部页面 bundle（换页无 FOUC，代价是首屏更慢；host 模式无意义） */
   preload?: 'none' | 'all'
-  /** 是否开启 NetworkObserver 自动拦截（默认 false，方案 B 用 apiBus 手动上报） */
-  observeNetwork?: boolean
   fetchImpl?: typeof fetch
   importImpl?: (url: string) => Promise<unknown>
   onError?: (error: RuntimeErrorInfo) => void

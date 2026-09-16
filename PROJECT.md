@@ -428,7 +428,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | agent 直传 props | element property | 旁路 `useRuntimeServices().pageProps` |
 | `defineExpose` → agent | 容器读 CE 实例 | 读 `currentRoute.matched[].instances.default` 的 `$.exposed` |
 | `defineEmits` → agent | 容器自动捕获 CE 事件 | ⚠️ **不自动捕获**，页面需 `ctx.emit()` |
-| 接口数据 → agent | `apiBus`（改 http 封装）或 observer | `observeNetwork: true` 零侵入（同副本，最准） |
+| 接口数据 → agent | `apiBus.report()`（**调用点显式**，不自动采集） | 同左（runtime 零采集，宿主自己决定报什么） |
 | 样式 / UI 库 | 容器内打包 + shadow 隔离（有泄漏点要补） | 宿主自己的（无隔离问题） |
 | 登录 / 路由守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫（⚠️ 被拒时 URL 挡住，但 agent 仍拿 `ok:true` —— 已知缺口） |
 | URL / 刷新 / 分享 | 宿主 URL 不变（页面在面板内） | URL 就是当前页 |
@@ -437,7 +437,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 - **硬约束**：① 面板必须挂在 `<router-view>` **之外**（挂路由组件里会被 agent 导航卸载）；
   ② manifest 的 `name` 必须等于宿主 route 的 `name`（init 一次性告警但**不中断**；缺失时导航返回
   `{ ok:false, reason:'not-found' }`，内核状态与宿主 URL 都不动）；
-  ③ 单实例（`apiBus` / 网络观测是全局副作用）；④ agent 导航缺省 `replace`（不污染用户历史）。
+  ③ 单实例（`apiBus` 是全局单例）；④ agent 导航缺省 `replace`（不污染用户历史）。
 - **接入**：`createVueHostRuntime({ router, app, manifestUrl })` + `<WebAssistant surface="host" :create-runtime>`；
   `wc.pages.json` **不声明 `container`**（analyzer 不写 `containers` / `pages[].bundle`）。
   完整清单、部署物对照与验收步骤见 [docs/INTEGRATION_GUIDE.md §9](./docs/INTEGRATION_GUIDE.md)。
@@ -536,7 +536,7 @@ pnpm dev:agent:ontology   # 或 pnpm --filter agent-server dev -- --manifest <pa
 | 面 | Vue 机制 | manifest 字段 | 方向 |
 |---|---|---|---|
 | 控制面 | `props` | `props[]` | agent → 页面（页面必须把可控入参声明成 props） |
-| 观测面 | 接口响应（axios 拦截器 → apiBus） | **`dataSources[]`（新增）** | 页面 → agent |
+| 观测面 | **调用点显式** `apiBus.report`（无自动采集） | **`dataSources[]`（可选加固）** | 页面 / 宿主 → agent |
 | 通知面 | `emit` | `events[]` | 页面 → agent |
 
 详细设计（ws 消息表、session 模型、侵入点、风险、待拍板清单）见

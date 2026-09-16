@@ -1,5 +1,5 @@
 // SessionService 单测（node:test + tsx 直跑 src）。
-// 覆盖 §4 落地的三块：page.emit 入 observation、pageExposedKeys 覆盖语义、contains 匹配（emit + network 回归）。
+// 覆盖：page.emit / page.data 入 observation、pageExposedKeys 覆盖语义、source / contains 匹配与超时。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { SessionService } from '../src/session/session.service.js'
@@ -64,22 +64,34 @@ test('recordPageExposed：同 tag 覆盖、不同 tag 隔离', () => {
   assert.deepEqual(session.pageExposedKeys?.['user-detail'], ['save'])
 })
 
-test('waitForObservation：network response 的 contains 匹配（回归）', async () => {
+test('waitForObservation：page.data 的 source + contains 匹配（显式上报回归）', async () => {
   const svc = makeService()
   const session = svc.createOrResume().session
   svc.recordObservation(session, {
-    type: 'page.network.response',
-    requestId: 'r1',
-    method: 'GET',
-    url: '/api/users/7',
-    status: 200,
-    ok: true,
-    data: { id: 7 },
-    receivedAt: Date.now(),
-    durationMs: 12,
+    type: 'page.data',
+    page: 'user-list',
+    source: 'user-list',
+    data: { list: [{ id: 7, name: '张三' }] },
+    truncated: false,
+    at: Date.now(),
   })
-  const got = await svc.waitForObservation(session.id, { url: '/api/users', contains: '/api/users/7' }, 500)
+  const got = await svc.waitForObservation(session.id, { source: 'user-list', contains: '张三' }, 500)
   assert.equal(got.status, 'completed')
+  if (got.status === 'completed') assert.equal(got.observations[0].type, 'page.data')
+})
+
+test('waitForObservation：source 不匹配则走超时路径', async () => {
+  const svc = makeService()
+  const session = svc.createOrResume().session
+  svc.recordObservation(session, {
+    type: 'page.data',
+    source: 'user-list',
+    data: { id: 7 },
+    truncated: false,
+    at: Date.now(),
+  })
+  const got = await svc.waitForObservation(session.id, { source: 'order-list' }, 200)
+  assert.equal(got.status, 'timed_out')
 })
 
 test('waitForObservation：实时等待（记录后到达的事件唤醒 waiter）', async () => {

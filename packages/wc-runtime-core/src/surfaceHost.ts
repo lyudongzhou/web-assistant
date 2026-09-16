@@ -14,7 +14,6 @@ export function createHostPageSurface(host: HostSurface, handles: KernelHandles)
   host.bindRuntime?.({
     servicesRef: handles.servicesRef,
     navigation: handles.navigation,
-    observer: handles.observer,
     routes: handles.routes,
     broadcastExposed: handles.broadcastExposed,
   })

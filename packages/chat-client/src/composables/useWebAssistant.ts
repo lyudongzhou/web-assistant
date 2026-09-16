@@ -200,12 +200,8 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
         payload: payload.payload,
       })
     },
-    onNetworkObservation: (observation) => {
-      // 方案 B：NetworkObserver 默认关闭；如果被开启，仍然转发（向后兼容）
-      socket.value?.sendObservation(observation)
-    },
     onPageData: (snapshot) => {
-      // 方案 B 主通道：页面 apiBus.report() → runtime 摘要 → 这里转发给 agent-server
+      // 宿主 / 页面显式 apiBus.report() → runtime 补元信息 → 这里转发给 agent-server
       socket.value?.sendPageData(snapshot)
     },
     onPageExposed: (info) => {

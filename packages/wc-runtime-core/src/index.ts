@@ -27,13 +27,7 @@ export { coerceValue, resolveProps, type ResolvePropsInput } from './props.js'
 export { createServicesRef, looksFrameworkBound, type MutableServicesRef } from './services.js'
 export { createStateBridge, type StateBridge, type StatePatch } from './state.js'
 export { createEventBus, type EventBus } from './events.js'
-export {
-  createNetworkObserver,
-  sanitizeData,
-  type NetworkObservation,
-  type NetworkObserver,
-  type NetworkObserverOptions,
-} from './observer.js'
+export { sanitizeData } from './sanitize.js'
 export { apiBus, type ApiReport } from './apiBus.js'
 export {
   activityBus,

@@ -114,6 +114,10 @@ app，`tryUseRuntimeServices()` 由 `null` 变可用）。manifest 的 `emits[]`
 
 ### D8 数据观测：零侵入优先
 
+> ⚠️ **本条已被后续决策取代（见 `docs/agent-session.md` §6）**：`observeNetwork` 与 `NetworkObserver` 已删除。
+> 现在的规则是「**调用点显式** `apiBus.report`」—— runtime 不采集任何请求，不调 = 零数据出网。
+> 下面这段保留了当时的取舍记录。
+
 host 模式下页面与 runtime 同副本，`observeNetwork: true` 拦截宿主 fetch/XHR 即为最准通道；`apiBus.report()`
 仍可用（面向「页面想主动上报」）。因二者都是全局副作用，**同一页面禁止挂多个 assistant**（多实例时告警），
 并写入文档硬规矩。

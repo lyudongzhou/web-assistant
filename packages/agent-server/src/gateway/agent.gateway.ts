@@ -7,7 +7,7 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets'
 import { Inject, Logger } from '@nestjs/common'
-import type { AgentSession, ClientMessage, PageObservation, PageDataSnapshot, PageEmit } from '@webassistant/protocol'
+import type { AgentSession, ClientMessage, PageDataSnapshot, PageEmit } from '@webassistant/protocol'
 import { SessionService } from '../session/session.service.js'
 import { ManifestService } from '../manifest/manifest.service.js'
 import { RpcService } from '../rpc/rpc.service.js'
@@ -19,17 +19,6 @@ interface ClientSocket {
   send(data: string): void
   on(event: string, listener: (...args: unknown[]) => void): void
 }
-
-type WireObservation = Extract<
-  ClientMessage,
-  {
-    t:
-      | 'page.network.request'
-      | 'page.network.response'
-      | 'page.network.error'
-      | 'page.network.timeout'
-  }
->
 
 interface ConnectionState {
   /** 连接序号，仅用于日志中标识一条连接（ws socket 对象本身 String() 后无信息量） */
@@ -174,7 +163,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     })
   }
 
-  /** 页面手动上报的数据快照（apiBus.report → page.data） */
+  /** 调用方显式上报的数据快照（apiBus.report → page.data） */
   @SubscribeMessage('page.data')
   handlePageData(
     @ConnectedSocket() client: ClientSocket,
@@ -191,39 +180,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } as PageDataSnapshot)
   }
 
-  @SubscribeMessage('page.network.request')
-  handleNetworkRequest(
-    @ConnectedSocket() client: ClientSocket,
-    @MessageBody() message: Extract<ClientMessage, { t: 'page.network.request' }>,
-  ): void {
-    this.recordObservation(client, message)
-  }
-
-  @SubscribeMessage('page.network.response')
-  handleNetworkResponse(
-    @ConnectedSocket() client: ClientSocket,
-    @MessageBody() message: Extract<ClientMessage, { t: 'page.network.response' }>,
-  ): void {
-    this.recordObservation(client, message)
-  }
-
-  @SubscribeMessage('page.network.error')
-  handleNetworkError(
-    @ConnectedSocket() client: ClientSocket,
-    @MessageBody() message: Extract<ClientMessage, { t: 'page.network.error' }>,
-  ): void {
-    this.recordObservation(client, message)
-  }
-
-  @SubscribeMessage('page.network.timeout')
-  handleNetworkTimeout(
-    @ConnectedSocket() client: ClientSocket,
-    @MessageBody() message: Extract<ClientMessage, { t: 'page.network.timeout' }>,
-  ): void {
-    this.recordObservation(client, message)
-  }
-
-  /** 页面 Vue `defineEmits` 事件 → 入 session.recentObservations（与 page.data/page.network.* 同构） */
+  /** 页面 Vue `defineEmits` 事件 → 入 session.recentObservations（与 page.data 同构） */
   @SubscribeMessage('page.emit')
   handlePageEmit(
     @ConnectedSocket() client: ClientSocket,
@@ -257,22 +214,6 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const session = this.requireSession(_client)
     this.logger.log(`page.exposed session=${session.id} tag=${message.tag} keys=${truncate(message.keys, 300)}`)
     this.sessions.recordPageExposed(session, message)
-  }
-
-  private recordObservation(client: ClientSocket, message: WireObservation): void {
-    const session = this.requireSession(client)
-    const { t, ...payload } = message
-    const detail =
-      'status' in payload
-        ? `${payload.method} ${truncate(payload.url, 120)} -> ${payload.status}`
-        : 'error' in payload
-          ? `${payload.method} ${truncate(payload.url, 120)} !! ${truncate(payload.error, 120)}`
-          : `${payload.method} ${truncate(payload.url, 120)}`
-    this.logger.debug(`${t} session=${session.id} ${detail}`)
-    this.sessions.recordObservation(session, {
-      ...payload,
-      type: t,
-    } as PageObservation)
   }
 
   private requireSession(client: ClientSocket): AgentSession {

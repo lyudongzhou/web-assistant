@@ -125,7 +125,7 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
     // wait_for_observation 工具：server 内部通过 session.waitForObservation() 阻塞等待，
     // 不走 RPC —— client 收到此 tool.call 是防御性处理，返回空结果即可。
-    // 观察事件通过 page.network.* 消息独立转发到 server。
+    // 观察事件通过 page.data / page.emit 消息独立转发到 server。
     if (message.name === 'wait_for_observation') {
       appendAssistant(`\n> 等待页面数据...\n`)
       const result: ToolResultMessage = {

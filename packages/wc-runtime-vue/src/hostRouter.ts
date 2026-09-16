@@ -8,7 +8,6 @@
 //   router,                                            // 宿主真实 vue-router
 //   app,                                               // 可选：provide runtime context 给页面
 //   manifestUrl: '/wc/manifest.json',
-//   observeNetwork: true,                              // 零侵入让 agent 看到接口数据
 //   initial,
 // })
 // ```
@@ -16,7 +15,9 @@
 //   - 页面在宿主自己的 <router-view> 渲染，不进容器、不编译 WC
 //   - 页面目录（manifest）的 name 必须等于宿主 route 的 name（init 时校验，缺失一次性报错）
 //   - 首屏默认 adopt 宿主当前路由（`adopt: false` 可关），因此不需要 initialPage
-//   - 只在一个位置挂载（apiBus / 网络观测是全局副作用）
+//   - **agent 能看到什么全由宿主决定**：runtime 不自动采集任何请求；
+//     宿主在需要的地方 `apiBus.report({ source, data })` 显式上报一次即可（不调 = 零数据出网）
+//   - 只在一个位置挂载（apiBus 是全局单例）
 import { createRuntime, type CreateRuntimeOptions, type Runtime } from '@webassistant/wc-runtime-core'
 import type { App } from 'vue'
 import type { Router } from 'vue-router'
@@ -32,7 +33,7 @@ export interface CreateVueHostRuntimeOptions
   passProps?: boolean
 }
 
-/** 当前活跃的 host runtime 数（apiBus / NetworkObserver 是全局副作用 → 不允许并存） */
+/** 当前活跃的 host runtime 数（apiBus 是全局单例 → 不允许并存） */
 let activeHostRuntimes = 0
 
 export function createVueHostRuntime(options: CreateVueHostRuntimeOptions): Runtime {
@@ -40,7 +41,7 @@ export function createVueHostRuntime(options: CreateVueHostRuntimeOptions): Runt
 
   if (activeHostRuntimes > 0) {
     console.warn(
-      '[wc-runtime-vue] 检测到第二个 host 模式 runtime：数据上报（apiBus）与网络观测是全局副作用，' +
+      '[wc-runtime-vue] 检测到第二个 host 模式 runtime：数据上报通道（apiBus）是全局单例，' +
         '多实例会互相抢占。请只在布局外壳里挂载一处 <WebAssistant>（不要挂在路由组件内）。',
     )
   }

@@ -13,7 +13,7 @@
 createRuntime({ surface })          ← 装配器：挑一个渲染面 + 装内核
   │
   ├── kernel.ts                     内核：导航真相源(navigation) · services/state · 事件总线 ·
-  │                                 网络观测(observer/apiBus) · 留痕(activity) · 页面目录(manifest) ·
+  │                                 数据上报(apiBus·显式) · 留痕(activity) · 页面目录(manifest) ·
   │                                 props 归一 · 视图状态机(view/status/error) · expose 广播
   │                                 —— 只通过下面两个扩展点接触「页面怎么落到屏幕」，不含 WC 概念
   │

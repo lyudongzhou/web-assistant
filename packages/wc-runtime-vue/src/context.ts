@@ -2,7 +2,7 @@
 // 用 Symbol.for 是有意的：同一批次内本来就是单副本（symbol 相同），
 // 万一出现多副本（比如宿主也装了本包），全局注册表仍能对齐。
 import { inject, type App, type InjectionKey, type ShallowReactive } from 'vue'
-import type { RuntimeNavApi, RuntimeServices, ServicesRef, NetworkObserver, ApiReport } from '@webassistant/wc-runtime-core'
+import type { RuntimeNavApi, RuntimeServices, ServicesRef, ApiReport } from '@webassistant/wc-runtime-core'
 import { apiBus } from '@webassistant/wc-runtime-core'
 
 export interface RuntimeServicesContext {
@@ -12,8 +12,6 @@ export interface RuntimeServicesContext {
   readonly state: ShallowReactive<Record<string, unknown>>
   /** 框架无关导航 API */
   readonly nav: RuntimeNavApi
-  /** 网络观察器（与容器同一实例；页面一般用不到，但保留以备后用） */
-  readonly observer: NetworkObserver
   /**
    * 随导航下发的「直传 props」旁路通道（浅响应式）。
    * - **host 模式（宿主直连）**：由 createVueHostSurface 写入 —— agent / 宿主直传的 props 落在这里，
@@ -40,14 +38,12 @@ export function createRuntimeContext(
   servicesRef: ServicesRef,
   nav: RuntimeNavApi,
   state: ShallowReactive<Record<string, unknown>>,
-  observer: NetworkObserver,
   pageProps: Record<string, unknown> = {},
 ): RuntimeServicesContext {
   return {
     get services() { return servicesRef.current },
     state,
     nav,
-    observer,
     pageProps,
     t(key, ...args) {
       const translate = servicesRef.current.t

@@ -225,7 +225,7 @@ export function defineVueContainer(
       if (change.kind !== 'state') return
       for (const key of change.keys) state[key] = ref.state[key]
     })
-    context = createRuntimeContext(define.servicesRef, define.navigation, state, define.observer)
+    context = createRuntimeContext(define.servicesRef, define.navigation, state)
     if (useVueRouter && !router) router = createVueRouter()
     if (!setupDone) {
       setupDone = true

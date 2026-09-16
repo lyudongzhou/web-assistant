@@ -50,7 +50,6 @@ export function createContainerSurface(
       servicesRef: handles.servicesRef,
       navigation: handles.navigation,
       framework: route.framework,
-      observer: handles.observer,
     }
     entry.adapter.definePage(mod ?? {}, api)
     if (mod?.styles?.length) styles.addMany('page', route.tag, mod.styles)
@@ -68,7 +67,6 @@ export function createContainerSurface(
         loader,
         servicesRef: handles.servicesRef,
         navigation: handles.navigation,
-        observer: handles.observer,
         strategy: options.containerStrategy,
         onPageEvent: handles.onPageEvent,
       })

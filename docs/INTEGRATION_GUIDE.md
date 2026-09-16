@@ -40,7 +40,7 @@ my-project/
 ├── src/ce/
 │   ├── container.ts         # 容器入口：store/router/axios/ui库/tailwind 的"总装车间"
 │   └── tailwind.css         # Tailwind 入口（?inline 导入）
-├── src/utils/httpClient.ts  # axios 实例 + 拦截器（apiBus 上报在这）
+├── src/utils/httpClient.ts  # axios 实例 + reportData()（**显式**上报入口，不做自动上报）
 ├── src/stores/userStore.ts  # pinia store（示例）
 └── src/pages/*.vue          # 业务页面（几乎零改动）
 ```
@@ -174,31 +174,71 @@ export const useUserStore = defineStore('user', () => {
 ### 4.5 axios
 
 - **实例**：`src/utils/httpClient.ts`，容器 `setup` 里 `setHttp(httpClient)` 接管老代码的 `import http`。
-- **拦截器 = apiBus 上报点**（方案 B 关键）：
+- **不做自动上报**：runtime 不拦 fetch/XHR、不监听请求。agent 能看到什么，由**调用点**显式决定；
+  不调 = 零数据出浏览器（详见 §4.5.1）。
 - **⚠️ 不要设 baseURL**：`http()` 的契约是"传完整 URL"（页面写 `/api/users`，与 fetch 一致）。若 axios 再设 `baseURL: '/api'`，会拼成 `/api/api/users` 双重前缀。
 
+#### 4.5.1 显式上报（`apiBus.report`）
+
 ```ts
-// src/utils/httpClient.ts
+// src/utils/httpClient.ts —— 只提供「上报入口」，不在这里自动上报
 import axios from 'axios'
 import { apiBus } from '@webassistant/wc-runtime-vue'
 
 export const httpClient = axios.create({ timeout: 10_000 })  // 不设 baseURL
 
-httpClient.interceptors.response.use(
-  (response) => {
-    // 每个响应自动上报给 agent；runtime 按 manifest dataSources 白名单过滤/摘要
-    apiBus.report({
-      url: response.config.url ?? '',
-      method: (response.config.method ?? 'get').toUpperCase(),
-      data: response.data,
-    })
-    return response
-  },
-  (error) => Promise.reject(error),
-)
+/** 显式上报一份数据给 agent（可选动作，按需调用） */
+export function reportData(source: string, data: unknown): boolean {
+  return apiBus.report({ source, data })
+}
 ```
 
-- **页面零感知**：老代码 `import http from '../utils/request'` 一行不改，实际走 axios；拦截器统一上报，页面**不需要**手动调 `apiBus.report()`（demo-app 里 UserList/UserDetail 已去掉手动上报）。
+```ts
+// 业务调用点：只报你愿意公开的那份数据（字段自己挑）
+const list = await http<User[]>('/api/users')
+reportData('user-list', list.map((u) => ({ id: u.id, name: u.name, role: u.role })))
+```
+
+**宿主侧也要报「宿主才知道的事实」**（登录态 / 角色 / 纯前端状态）—— 这类数据页面没有，
+不报 agent 就不知道（runtime 不会替你去采集）：
+
+```ts
+// 宿主代码（main.ts / 布局外壳），只装 chat-client 时也能 import 到同一个 apiBus
+import { apiBus } from '@webassistant/chat-client'
+
+function reportHostContext(trigger: 'ready' | 'login' | 'logout'): void {
+  apiBus.report({
+    source: 'host-context',
+    data: {
+      trigger,
+      loggedIn: Boolean(auth.user),
+      user: auth.user ? { name: auth.user.name, role: auth.user.role } : null,
+      // ⚠️ 故意不给 token：报什么由宿主决定，凭证类字段一律不出浏览器
+    },
+  })
+}
+```
+
+于是常见分工是：**页面报接口数据，宿主报宿主事实**（谁报、报什么，都在各自的调用点一目了然）。
+
+- **为什么手动**：自动拦截宿主页面的**全部**请求，会把不相关甚至敏感的数据带出浏览器；
+  靠事后白名单补救既不可靠也难维护。所以决定权回到调用点：报什么、什么时候报，一目了然。
+- **import 从哪来**：`@webassistant/wc-runtime-vue`（用法 B 宿主本来就有）或 `@webassistant/chat-client`
+  （用法 A 只装面板时也转出了同一个全局单例）；页面内也可用 `useRuntimeServices().reportApiData()`。
+- **零数据出网是默认状态**：没有任何 `apiBus.report` 调用 = agent 侧什么数据都收不到（见 §4.5.2）。
+- **不必**调 `apiBus.attach()`：消费端只有 runtime 内核一处（它是单 sink，业务侧自己 attach 会顶掉内核，
+  覆盖时会 `console.warn` 提示）。`report()` 返回 `false` 表示当前没人监听
+  （例如同一份页面代码跑在没挂 `<WebAssistant>` 的 SPA 里），可用于开发期自检。
+- **可选加固**：若页面在 manifest 里声明了 `dataSources` 且上报带 `url` 且命中，
+  runtime 会按 `fields` / `maxRows` / `mask` 再裁一层 —— 这是额外保险，不是隐私边界。
+- **硬上限**：runtime 侧对上报数据施加 16KB / 深度 4 上限（防 token 爆），超限置 `truncated: true`。
+
+#### 4.5.2 agent 侧看到的效果
+
+- 有 `apiBus.report` → ws `page.data`（`source` / `data` / `truncated` / `at`）→ 入 session → 进 prompt 的
+  `[页面数据] 来源：…`；`wait_for_observation` 可用 `{ source, contains }` 等它。
+- 没有调用 → agent 侧只有 `page.navigated` / `page.exposed` / `page.emit` 这些**元信息与通知**，
+  一条业务数据都没有（这是设计意图，不是 bug）。
 - **⚠️ 容器 setHttp 要包一层取 .data**：axios 实例被当函数调用返回 `AxiosResponse`（`{data,status,...}`），而 `http()` 契约要裸数据（fetch 返回 `res.json()`）。容器 `setup` 里必须包成 `(url, init) => httpClient.request({...}).then(r => r.data)` 再交给 `setHttp`，否则表格/列表拿到的是 AxiosResponse 对象而非数组，数据"填不进"。
 
 ### 4.6 宿主 store 里的数据怎么进 CE
@@ -278,8 +318,8 @@ createHostStorePusher(...).plugin                          createStoreMirror().p
 | `<el-button>` 等 EP 组件 | 容器 plugins | 否 |
 | `class="flex px-4"` | tailwind 进 shadow root | 否 |
 | `useStore()` / `defineStore` | 容器 pinia | 否 |
-| 让 agent 看到请求数据 | axios 拦截器自动 `apiBus.report` | 否 |
-| 让 agent 看到组件交互数据 | 加一行 `apiBus.report({ url, data })` | 是（可选） |
+| 让 agent 看到请求数据 | 在调用点显式 `reportData('user-list', data)`（无自动上报） | 是（一行，可选） |
+| 让 agent 看到组件交互数据 | 同上：`apiBus.report({ source, data })` | 是（可选） |
 
 ---
 
@@ -297,7 +337,7 @@ createHostStorePusher(...).plugin                          createStoreMirror().p
 | 接口请求头里没有宿主 token | 容器拦截器把 `getToken` **捕获成了局部变量**（stale 捕获）。改成每次请求现读 `context.services.getToken?.()`（见 4.5） |
 | 页面 store 值"首次能读、之后不更新" | 跨副本传了宿主的响应式实例（pinia store / ref）。改走 store 快照桥或 `runtime.setState` 快照 |
 | 宿主改了 store，页面没动 | 推的是同一个对象引用（state 桥用 `Object.is` 判等 → 认为没变化）；每次推**新对象**（`cloneHostState` 已处理） |
-| axios 请求没上报 agent | 拦截器没装；或 manifest 该页面没声明 `dataSources`（白名单过滤） |
+| agent 侧看不到任何接口数据 | **预期行为**：runtime 不自动采集。请在业务调用点显式 `apiBus.report({ source, data })`；若已声明 `dataSources` 且带 `url`，确认 URL 命中了 `match` |
 | el-select 下拉样式错乱 | 容器缺 `lightDomStyles`（浮层 teleport 到 body 的补丁） |
 | 页面里 `useRoute()` 拿不到参数 | 用 `defineProps` 的 `id` prop（runtime 会把 params 归一为 prop） |
 
@@ -430,8 +470,9 @@ server: { proxy: { '/ws': { target: 'ws://localhost:3000', ws: true } } }
           router,                                   // 宿主真实 vue-router
           app,                                      // 可选：provide runtime context 给页面
           manifestUrl: '/wc/manifest.json',
-          observeNetwork: true,                     // 零侵入让 agent 看到接口数据
           initial,
+          // ⚠️ 没有「自动采集」开关：runtime 不拦 fetch/XHR。
+          //    agent 能看到什么，由宿主在业务代码里显式 apiBus.report() 决定（不调 = 零数据出网）
         })"
         @page-change="(info) => console.log(info)"
       />
@@ -469,7 +510,7 @@ pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
 | agent 直传 props | element property（对象可用） | 旁路：页面读 `useRuntimeServices().pageProps` |
 | `defineExpose` → agent 调用 | 容器读 CE 的 `_instance.exposed` | 读真实实例的 `$.exposed` |
 | `defineEmits` → agent | 容器自动捕获 | ⚠️ **不自动捕获**，页面需 `useRuntimeServices().emit(...)` |
-| 接口数据 → agent | `apiBus`（改 http 封装一行） | `observeNetwork: true` 零侵入 |
+| 接口数据 → agent | `apiBus.report()`（调用点显式） | 同左：runtime **零采集**，宿主自己决定报什么 |
 | 样式 / UI 库 | 容器内打包 + shadow 隔离 | 宿主自己的，无隔离问题 |
 | 登录 / 权限守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫 —— ⚠️ 被拒时 URL 挡住了，但 agent 当前仍拿到 `ok:true`（见 9.6 已知缺口） |
 | URL / 刷新 / 分享 | 宿主 URL 不变 | URL 就是当前页 |
@@ -478,7 +519,7 @@ pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
 
 1. **面板挂在 `<router-view>` 之外**（布局外壳 / 悬浮层）。原来的「`/aiassistant` 路由内嵌 `<WebAssistant>`」在用法 B 下不成立：agent 一导航，面板随之卸载。
 2. **manifest `name` ↔ 宿主 route `name` 一一对应**（init 告警但不中断；缺名时导航返回 `not-found`）。
-3. **单实例**：`apiBus` / 网络观测是全局副作用，同页挂两个 `<WebAssistant>` 会互相抢占（第二个实例会打告警）。
+3. **单实例**：`apiBus` 是全局单例，同页挂两个 `<WebAssistant>` 会互相抢占（第二个实例会打告警）。
 4. **agent 导航缺省 `replace`**，不污染用户历史；URL 会跟着变（这是设计意图：URL 与内核双向镜像，URL 为最终裁决）。
 
 **已知缺口（`wc-runtime-vue@0.3.0` 保留，待后续批次修）**：**宿主自己的守卫**（你项目 `router.beforeEach`
@@ -494,7 +535,7 @@ pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
 - [ ] agent「打开 XX 页面」→ URL 变化 + 你自己的 `<router-view>` 渲染该页面 + 面板仍在
 - [ ] 用户点自己的导航 / 浏览器后退 → agent 侧收到 `page.navigated`（source=`host`）
 - [ ] `call_page_method` 调用到真实组件的 `defineExpose` 方法（返回值 / 异常都能回给 agent）
-- [ ] 页面接口数据能被 agent 看到（`observeNetwork` 或 `apiBus`）
+- [ ] 页面接口数据能被 agent 看到（在调用点显式 `apiBus.report()`；不调 = 一条都没有）
 - [ ] manifest `name` 写错 → init 告警一次列出缺失名（不中断）；agent 导航返回
       `{ ok:false, reason:'not-found' }`，URL 与内核当前页都不变
 - [ ] 内核守卫（`runtime.beforeEach`）拒绝某路由 → agent 导航返回 `{ ok:false, reason:'aborted' }`，URL 不变

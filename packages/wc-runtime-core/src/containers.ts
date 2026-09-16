@@ -10,7 +10,6 @@ import type {
   RuntimeView,
   ServicesRef,
 } from './types.js'
-import type { NetworkObserver } from './observer.js'
 
 export interface ContainerEntry {
   framework: string
@@ -27,8 +26,6 @@ export interface ContainerManagerOptions {
   loader: BundleLoader
   servicesRef: ServicesRef
   navigation: RuntimeNavApi
-  /** 网络观察器，透传给每个容器 */
-  observer: NetworkObserver
   strategy?: ContainerStrategy
   /** 页面事件回传通道，透传给每个容器 */
   onPageEvent?: (payload: { tag: string; event: string; payload?: unknown }) => void
@@ -93,7 +90,6 @@ export function createContainerManager(options: ContainerManagerOptions): Contai
         tagName,
         servicesRef: options.servicesRef,
         navigation: options.navigation,
-        observer: options.observer,
         onPageEvent: options.onPageEvent,
       })
       const entry: ContainerEntry = { framework, tagName, adapter, handle, mounted: false }

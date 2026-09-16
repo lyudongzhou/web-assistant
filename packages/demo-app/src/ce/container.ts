@@ -6,7 +6,7 @@
 // - router           → runtime 自动 createVueRouter 并桥接（无需手动）
 // - element-plus     → plugins 注册 + shadowStyles(基座) + lightDomStyles(浮层补丁)
 // - tailwind         → 编译产物 ?inline 进 shadowStyles(base 层)，页面 class 生效
-// - axios            → 这里创建实例 + 拦截器统一 apiBus.report，setHttp 接管老代码
+// - axios            → 这里创建实例 + setHttp 接管老代码；**不做自动上报**（上报由调用点显式决定）
 import { createStoreMirror, defineVueContainer } from '@webassistant/wc-runtime-vue'
 import ElementPlus from 'element-plus'
 import elementPlusCss from 'element-plus/dist/index.css?inline'
@@ -33,7 +33,7 @@ export default defineVueContainer({
   lightDomStyles: [elementPlusCss],
 
   // ④ axios：接管批次的共享 HTTP 实现，老代码 `import http` 无需改动。
-  //    httpClient 的拦截器已把每个响应 apiBus.report 上报给 agent（方案 B）
+  //    agent 侧要看到数据，请在页面的调用点显式 reportData（runtime 不自动上报）
   setup(context) {
     // 宿主 store 镜像：把 state 桥里的 `store:<id>` 快照灌进本批同名 store，并持续同步
     storeMirror.attach(context)

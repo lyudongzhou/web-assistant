@@ -80,12 +80,20 @@ export class AgentService {
 
     const waitTool = createTool<WaitForObservationToolArgs, unknown>({
       name: 'wait_for_observation',
-      description: '等待页面出现与目标相关的网络响应、错误或超时。不要猜测未观察到的业务数据。',
+      description:
+        '等待页面显式上报的数据（page.data）或页面事件（page.emit）中出现与目标相关的内容。' +
+        '注意：runtime 不自动采集网络请求，宿主/页面只会上报它愿意公开的数据 —— ' +
+        '如果什么都没上报，这里会超时；不要猜测未观察到的业务数据。',
       inputSchema: {
         type: 'object',
         properties: {
           page: { type: 'string' },
-          match: { type: 'object' },
+          match: {
+            type: 'object',
+            description:
+              '匹配条件：page（页面 tag）/ source（上报来源标识）/ event（页面事件名）/ ' +
+              'contains（在数据里查找的字符串）。',
+          },
           timeoutMs: { type: 'number' },
         },
       },

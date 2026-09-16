@@ -7,6 +7,10 @@ import type { WebAssistantProps } from './types.js'
 
 export { WebAssistant }
 export { WelcomePage }
+// 显式上报通道：宿主只装 chat-client（用法 A / 容器模式）时也有明确入口，
+// 不必为了 import apiBus 额外引入 @webassistant/wc-runtime-vue。
+// 与 wc-runtime-vue / wc-runtime-core 转出的是**同一个全局单例**（Symbol.for + globalThis）。
+export { apiBus, type ApiReport } from '@webassistant/wc-runtime-core'
 export { useWebAssistant } from './composables/useWebAssistant.js'
 export { useRuntimeHost } from './composables/useRuntimeHost.js'
 export { useAgentChat } from './composables/useAgentChat.js'

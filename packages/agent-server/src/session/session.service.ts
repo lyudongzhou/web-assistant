@@ -4,10 +4,6 @@ import type {
   AgentSession,
   CurrentPage,
   PageObservation,
-  PageNetworkRequest,
-  PageNetworkResponse,
-  PageNetworkError,
-  PageNetworkTimeout,
   ObservationMatch,
 } from '@webassistant/protocol'
 import { MemorySessionStore, type SessionStore } from './session.store.js'
@@ -51,7 +47,6 @@ export class SessionService implements OnModuleDestroy {
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
       history: [],
-      pendingRequests: new Map(),
       recentObservations: [],
     }
     this.store.set(session)
@@ -93,11 +88,6 @@ export class SessionService implements OnModuleDestroy {
 
   recordObservation(session: AgentSession, observation: PageObservation): void {
     this.touch(session)
-    if (observation.type === 'page.network.request') {
-      session.pendingRequests.set(observation.requestId, observation)
-    } else if (this.isNetworkTerminal(observation)) {
-      session.pendingRequests.delete(observation.requestId)
-    }
     session.recentObservations.push(observation)
     if (session.recentObservations.length > MAX_OBSERVATIONS) {
       session.recentObservations.splice(0, session.recentObservations.length - MAX_OBSERVATIONS)
@@ -108,9 +98,7 @@ export class SessionService implements OnModuleDestroy {
   waitForObservation(sessionId: string, match: ObservationMatch, timeoutMs: number): Promise<ObservationWaitResult> {
     const session = this.store.get(sessionId)
     if (!session) return Promise.resolve({ status: 'failed', error: 'session not found' })
-    const existing = session.recentObservations.filter((observation) => (
-      observation.type !== 'page.network.request' && this.matches(observation, match)
-    ))
+    const existing = session.recentObservations.filter((observation) => this.matches(observation, match))
     if (existing.length) return Promise.resolve({ status: 'completed', observations: existing })
 
     return new Promise((resolve) => {
@@ -143,35 +131,26 @@ export class SessionService implements OnModuleDestroy {
 
   private resolveMatchingWaiters(sessionId: string, observation: PageObservation): void {
     for (const [id, waiter] of this.waiters) {
-      if (
-        waiter.sessionId !== sessionId
-        || observation.type === 'page.network.request'
-        || !this.matches(observation, waiter.match)
-      ) continue
+      if (waiter.sessionId !== sessionId || !this.matches(observation, waiter.match)) continue
       clearTimeout(waiter.timer)
       this.waiters.delete(id)
-      if (observation.type === 'page.network.error') waiter.resolve({ status: 'failed', error: observation.error })
-      else waiter.resolve({ status: 'completed', observations: [observation] })
+      waiter.resolve({ status: 'completed', observations: [observation] })
     }
   }
 
   private matches(observation: PageObservation, match: ObservationMatch): boolean {
     if (match.page && observation.page !== match.page) return false
-    if (match.requestId && ('requestId' in observation) && observation.requestId !== match.requestId) return false
-    if (match.method && ('method' in observation) && observation.method.toUpperCase() !== match.method.toUpperCase()) return false
-    if (match.url && ('url' in observation) && !observation.url.includes(match.url)) return false
+    if (match.source) {
+      if (observation.type !== 'page.data' || observation.source !== match.source) return false
+    }
+    if (match.event) {
+      if (observation.type !== 'page.emit' || observation.event !== match.event) return false
+    }
     if (match.contains) {
-      // emit / data / visible 这类不带 URL 的事件：按 contains 在序列化 JSON 里匹配
-      if (observation.type === 'page.emit') {
-        const haystack = `${observation.event}\n${JSON.stringify(observation.payload ?? null)}`
-        if (!haystack.includes(match.contains)) return false
-      } else if ('url' in observation) {
-        const text = `${observation.url}\n${JSON.stringify(observation)}`
-        if (!text.includes(match.contains)) return false
-      } else {
-        const text = JSON.stringify(observation)
-        if (!text.includes(match.contains)) return false
-      }
+      const text = observation.type === 'page.emit'
+        ? `${observation.event}\n${JSON.stringify(observation.payload ?? null)}`
+        : JSON.stringify(observation)
+      if (!text.includes(match.contains)) return false
     }
     return true
   }
@@ -181,14 +160,6 @@ export class SessionService implements OnModuleDestroy {
     for (const session of this.store.values()) {
       if (now - session.lastSeenAt > SESSION_TTL_MS) this.store.delete(session.id)
     }
-  }
-
-  private isNetworkTerminal(
-    observation: PageObservation,
-  ): observation is PageNetworkResponse | PageNetworkError | PageNetworkTimeout {
-    return observation.type === 'page.network.response'
-      || observation.type === 'page.network.error'
-      || observation.type === 'page.network.timeout'
   }
 }
 
