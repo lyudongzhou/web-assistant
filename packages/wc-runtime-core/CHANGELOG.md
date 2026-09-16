@@ -2,12 +2,14 @@
 
 ## 0.3.1
 
-> 0.3.0 的版本元数据已写入 registry，但 tarball 丢失（`npm i @webassistant/wc-runtime-core@0.3.0` 返回 404），
-> 内容与 0.3.0 完全相同，改以 0.3.1 发布。
+> 0.3.0 **本身是可用的**：`registry.npmjs.org` 的**边缘节点**（本机网络路径）取 tarball 返回 404，
+> 但镜像（registry.npmmirror.com）能正常取回，实测 `npm i @webassistant/chat-client@0.5.0`
+> 可解析并安装 0.3.0。因已发布的版本号无法撤回，改以 0.3.1 补发（内容与 0.3.0 完全相同），
+> 并把 `latest` 指到 0.3.1，避免消费者踩到该边缘节点的陈旧缓存。
 
 ### Patch Changes
 
-- 无代码变更（同 0.3.0，仅重发以修复 registry 侧 tarball 缺失）。
+- 无代码变更（同 0.3.0，仅换版本号重发）。
 
 ## 0.3.0
 
