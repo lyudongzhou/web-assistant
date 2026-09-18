@@ -49,8 +49,15 @@ export interface UseAgentChatReturn {
   /** 取消当前 agent run */
   cancel: () => void
   reset: () => void
+  /**
+   * 开始新会话（会话 = 连接）：清空消息并主动重连（服务端新建会话）。
+   * 等价于刷新页面但不必关标签页；供 UI 的「新会话」入口调用。
+   */
+  startNewSession: () => void
   /** 供外部把 socket.onMessage 回调接到这里（分发 chat.text / tool.call / done / error） */
   _handleServerMessage: (message: ServerMessage) => void
+  /** 供外部把 socket.onSessionReset 回调接到这里（掉线重连 = 新会话 → 清空聊天区并提示） */
+  _handleSessionReset: () => void
 }
 
 export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
@@ -205,5 +212,39 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     loading.value = false
   }
 
-  return { messages, loading, welcome, sessionReady, send, cancel, reset, _handleServerMessage: handleServerMessage }
+  /**
+   * 掉线重连 / 主动新会话：清空聊天区并提示。
+   * 会话 = 连接 ⇒ 重连必然是新会话，旧气泡留着会造成「旧记录 + 无记忆」的错位观感。
+   */
+  function handleSessionReset(): void {
+    const hadMessages = messages.value.length > 0
+    reset()
+    if (hadMessages) {
+      messages.value.push({ role: 'assistant', content: '连接已重置，已开始新会话。' })
+    }
+  }
+
+  /** 主动开始新会话：清消息 + 提示 → 断开重连（服务端新建会话）。 */
+  function startNewSession(): void {
+    reset()
+    messages.value.push({ role: 'assistant', content: '连接已重置，已开始新会话。' })
+    const socket = options.socket()
+    if (!socket) return
+    socket.startNewSession().catch((cause: unknown) => {
+      console.warn('[agentSocket] 新会话连接失败', cause)
+    })
+  }
+
+  return {
+    messages,
+    loading,
+    welcome,
+    sessionReady,
+    send,
+    cancel,
+    reset,
+    startNewSession,
+    _handleServerMessage: handleServerMessage,
+    _handleSessionReset: handleSessionReset,
+  }
 }

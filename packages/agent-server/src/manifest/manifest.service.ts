@@ -15,8 +15,14 @@ import type {
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
-/** 远程 manifest 来源（如 http://localhost:5778/wc/manifest.json）；配置后优先于 MANIFEST_PATH */
-const MANIFEST_URL = process.env.MANIFEST_URL || ''
+/**
+ * 远程 manifest 来源（如 http://localhost:5778/wc/manifest.json）；配置后优先于 MANIFEST_PATH。
+ *
+ * ⚠️ 必须**懒读**：`--manifest-url` 是 `main.ts` 的 `applyCliArgs()` 写进 process.env 的，而它发生在
+ * 模块求值**之后** —— 顶层 `const MANIFEST_URL = process.env.MANIFEST_URL` 会把 dotenv 的值快照下来，
+ * 让命令行参数静默失效（启动日志却是运行时读的 → 打印你传的 URL、实际加载 .env 的地址，极难查）。
+ */
+const manifestUrl = (): string => process.env.MANIFEST_URL || ''
 
 /** 远端拉取超时（ms），避免启动时因迟迟无响应而挂死 */
 const FETCH_TIMEOUT_MS = Number(process.env.MANIFEST_FETCH_TIMEOUT_MS || 8_000)
@@ -40,7 +46,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
   private refreshTimer: null | ReturnType<typeof setInterval> = null
 
   async onModuleInit(): Promise<void> {
-    if (MANIFEST_URL) {
+    if (manifestUrl()) {
       // 远程来源：启动先尝试拉取一次（失败不阻断启动，带空 manifest 起来），
       // 之后按 REFRESH_INTERVAL_MS 定期刷新：未拉到会不断重试，拉到后持续更新。
       await this.tryLoadRemote()
@@ -63,7 +69,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
   getManifest(): RuntimeManifest {
     // 远程来源在 onModuleInit 已同步拉取完成，之后的读取直接拿缓存；
     // 本地文件来源保留 mtime 热重载，保证改动能被实时感知。
-    if (!MANIFEST_URL) this.reloadFileIfChanged()
+    if (!manifestUrl()) this.reloadFileIfChanged()
     return this.manifest
   }
 
@@ -182,7 +188,8 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     lines.push('5. 当前页有可调用方法时，优先用 call_page_method 精准操作（不要为了换状态重新 render 整个页面）。')
     lines.push('6. call_page_method 成功时 ack 为 { status: "success", value? }（Promise 会等 resolve；非 Promise 立即返回），可作为后续观察/推理的事实依据；失败为 ok:false + error。')
     lines.push('7. 方法签名里出现的参数必须放进 call_page_method 的 args（按签名顺序），缺失会以 undefined 调用而失败；无参数的方法可省略 args。')
-    lines.push('   例：call_page_method({ name: "setKeyword", args: ["钱"] })；call_page_method({ name: "save", args: [{ name: "新数据源", host: "127.0.0.1" }] })')
+    lines.push('   例：call_page_method({ name: "nextPage" })；call_page_method({ name: "openCreateDialog", args: [{ name: "订单库", host: "10.0.0.9", port: 3306 }] })')
+    lines.push('8. 页面方法只用来「打开 / 预填 / 翻页 / 筛选 / 导航」：保存、新增、删除等写后端的动作不在可调用方法里，必须请用户在页面上确认提交；预填后要明确告诉用户「已填好，请确认」。')
 
     // 项目规则：随 manifest 下发（wc.pages.json 的 rules 自动收集），优先于上面的通用规则。
     const projectRules = this.getRules().filter((rule) => !rule.disabled)
@@ -249,7 +256,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
 
   /** 远程拉取一次。成功写入内存缓存；任何一步失败都抛出，由 tryLoadRemote 兜底。 */
   private async loadRemote(): Promise<void> {
-    const url = MANIFEST_URL
+    const url = manifestUrl()
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
     let res: Response
@@ -279,7 +286,19 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
 
   private reloadFileIfChanged(force = false): void {
     const filePath = this.resolveManifestPath()
-    const mtimeMs = statSync(filePath).mtimeMs
+    let mtimeMs: number
+    try {
+      mtimeMs = statSync(filePath).mtimeMs
+    } catch {
+      // 把 ENOENT 变成可操作的提示：相对路径按**当前工作目录**解析，而 `pnpm --filter agent-server`
+      // 启动时 cwd 是 packages/agent-server（写仓库根的路径会差一层 demo-app）
+      throw new Error(
+        `MANIFEST_PATH 指向的文件不存在：${filePath}（cwd=${process.cwd()}）。` +
+          '相对路径按当前工作目录解析 —— 用 `pnpm dev:agent`（= --filter agent-server）启动时 cwd 是 ' +
+          'packages/agent-server，仓库根的 manifest 应写成 ../demo-app/public/wc/manifest.json，' +
+          '或直接给绝对路径；只有装不进去的包才会用 MANIFEST_URL 远程拉取。',
+      )
+    }
     if (!force && this.manifest && filePath === this.manifestPath && mtimeMs === this.loadedMtimeMs) return
 
     const parsed: unknown = JSON.parse(readFileSync(filePath, 'utf8'))
@@ -296,7 +315,12 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveManifestPath(): string {
-    return process.env.MANIFEST_PATH || path.resolve(moduleDir, '../../../demo-app/manifest.json')
+    const configured = process.env.MANIFEST_PATH
+    if (configured) {
+      // 相对路径按**当前工作目录**解析（与 node 习惯一致）；写错时由 reloadFileIfChanged 给出可读提示
+      return path.resolve(process.cwd(), configured)
+    }
+    return path.resolve(moduleDir, '../../../demo-app/public/wc/manifest.json')
   }
 
   private validateManifest(value: unknown): RuntimeManifest {
@@ -308,8 +332,16 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
       if (!page || typeof page !== 'object' || typeof page.tag !== 'string' || !page.tag) {
         throw new Error('manifest page.tag is required')
       }
-      if (typeof page.name !== 'string' || typeof page.bundle !== 'string') {
-        throw new Error(`manifest page ${page.tag} requires name and bundle`)
+      if (typeof page.name !== 'string') {
+        throw new Error(`manifest page ${page.tag} requires name`)
+      }
+      // ⚠️ bundle **不是**必填：只有 WC 批次（用法 A）的页面才经产物编译。
+      //    宿主直连批次（用法 B / host）的页面是宿主自己的路由组件，manifest 里没有 bundle
+      //    （protocol 的 pages[].bundle 本就是可选）。这里只校验「给了就必须是字符串」。
+      //    历史坑：把 bundle 当必填会让 host manifest 在本地文件模式下启动崩、在远端模式下被
+      //    tryLoadRemote 吞掉变成空目录（agent 静默失明），见 test/manifest.host.test.ts。
+      if (page.bundle !== undefined && typeof page.bundle !== 'string') {
+        throw new Error(`manifest page ${page.tag}.bundle must be a string when present`)
       }
     }
     return candidate as RuntimeManifest

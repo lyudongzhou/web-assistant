@@ -95,6 +95,14 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
   const hostOnly = !config.container
   for (const page of config.pages) {
     const tag = resolveTag(page)
+    // 同一份清单会**同时驱动 WC 构建**（vite-plugin-wc 的 loadWcPages 要求 tag 是合法自定义元素名）。
+    // 这里提前警告：否则要到 `pnpm build:ce` 才由插件报错 —— 报错点在构建期，离清单很远，不易定位。
+    if (!hostOnly && !tag.includes('-')) {
+      console.warn(
+        `  ⚠️ 页面 ${page.name} 的 tag「${tag}」不含 '-'：本清单声明了 container（走 WC 构建），` +
+          "自定义元素标签必须包含 '-'。请改 tag（一份清单驱动两批时，所有 tag 都要满足）。",
+      )
+    }
     const routePath = page.path || `/${tag}`
     const componentPath = path.resolve(root, page.component)
     const exists = fs.existsSync(componentPath)
@@ -159,6 +167,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
       exampleQueries: ai?.exampleQueries ?? [],
       // 页面级规则：未声明则不写字段（避免噪音）
       ...(pageRules.length ? { rules: pageRules } : {}),
+      // 数据源声明：原样透传（单一来源 = wc.pages.json，避免手改产物被下次 analyze 冲掉）
+      ...(page.dataSources?.length ? { dataSources: page.dataSources } : {}),
     })
   }
 

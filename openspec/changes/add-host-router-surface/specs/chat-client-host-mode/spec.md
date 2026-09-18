@@ -27,6 +27,18 @@ host 模式下 runtime MUST 由宿主提供的 `createVueHostRuntime` 构造；c
 - **WHEN** host 模式下 agent 打开页面
 - **THEN** 面板内不出现容器节点（无 shadow root 挂载点），页面只出现在宿主 `<router-view>`
 
+#### Scenario: 无渲染区以紧凑提示条呈现
+
+- **WHEN** 面板处于窄容器（宿主右下角悬浮 dock 等）且当前没有面板内渲染区
+- **THEN** 面板不出现占满一整列的空白面板，而是 header 下方一条紧凑提示条（模式徽标 + 文案 + 加载/打断）
+- **AND** 提示条 SHALL 保持足够宽度给对话区（一整列占位会把窄面板里的对话区挤到不可用）
+- **AND** 运行时错误 MUST 仍以横幅形式在面板内可见（不因去掉渲染区而丢失）
+
+#### Scenario: host 模式错误仍可见
+
+- **WHEN** host 模式下导航失败或运行时抛错
+- **THEN** 面板内在提示条下方显示错误横幅，且 `error` emit 行为不变
+
 ### Requirement: hasPage 语义
 
 host 模式下 `hasPage` SHALL 表示「当前路由命中页面目录」，而 MUST NOT 再由面板内部渲染区是否渲染 WC 决定。

@@ -1,6 +1,7 @@
 // wc.pages.json v2 —— 一个 framework 批次的构建清单，是「唯一真相来源」：
 // vite-plugin-wc 读它决定怎么打包，analyzer 读它生成 manifest。
 // 命名规则（tag / 入口名 / 产物路径）统一放在本文件，避免插件与 analyzer 各算一套导致漂移。
+import type { ManifestDataSource } from './manifest.js'
 
 export interface WcPageEntry {
   /** 路由名（PascalCase），供 router.push({ name }) 使用 */
@@ -17,6 +18,17 @@ export interface WcPageEntry {
    * analyzer / wcManifestPlugin 自动收集进 `manifest.pages[].rules`。
    */
   rules?: WcRuleEntry[]
+  /**
+   * 页面可上报的数据源声明 —— 原样写进 `manifest.pages[].dataSources`（单一来源，避免手改产物）。
+   *
+   * 语义是「声明 + 有界裁剪」：
+   * - agent 侧：prompt 里预先声明该页能拿到什么数据（planning 依据）
+   * - runtime 侧：`apiBus.report({ url })` 命中 `match` 时，按 `fields` / `maxRows` / `mask` 摘要后才出网；
+   *   未命中 → 原样透传（调用点已显式决定报什么）
+   *
+   * 注意：声明 ≠ 自动上报。runtime 零采集，仍需调用点显式 `apiBus.report`。
+   */
+  dataSources?: ManifestDataSource[]
 }
 
 /**

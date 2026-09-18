@@ -57,7 +57,15 @@ export {
 // 宿主直连用法（用法 B）：agent 操作宿主真实 router，页面在宿主自己的 <router-view> 渲染。
 // 只想用这一条用法时走子入口 `@webassistant/wc-runtime-vue/host-router`（不引入容器 / CE 机制）。
 export { createVueHostSurface, type VueHostSurface, type VueHostSurfaceOptions } from './hostSurface.js'
-export { createVueHostRuntime, type CreateVueHostRuntimeOptions } from './hostRouter.js'
+export {
+  createVueHostRuntime,
+  createVueHostRuntimeBinding,
+  resolveHostManifestUrl,
+  DEFAULT_MANIFEST_BASE,
+  type CreateVueHostRuntimeOptions,
+  type CreateVueHostRuntimeBindingOptions,
+  type HostRuntimeContextLike,
+} from './hostRouter.js'
 
 // 转出宿主会用到的 core 契约类型，让宿主无需直接依赖 core
 export type {

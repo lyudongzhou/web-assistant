@@ -1,5 +1,8 @@
 // Agent session 的共享数据模型。
-// 连接可以断开，但 session 上下文独立存活；连接级 pending call 不持久化。
+//
+// 生命周期语义：**一个会话 = 一条 WebSocket 连接**（connection-scoped）。
+// 握手（session.hello）时创建，连接断开时销毁；会话标识与内容都不落任何持久化介质，
+// 连接级 pending call 同样不持久化。多轮对话由连接内的长驻 agent runtime 承载。
 
 import type { PageObservation } from './observation.js'
 
@@ -10,14 +13,6 @@ export type AgentRunStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-
-export type ChatTurnRole = 'user' | 'assistant' | 'system'
-
-export interface ChatTurn {
-  role: ChatTurnRole
-  content: string
-  createdAt: number
-}
 
 export type NavigationSource = 'page' | 'host' | 'agent'
 
@@ -53,7 +48,6 @@ export interface AgentSession {
   id: string
   createdAt: number
   lastSeenAt: number
-  history: ChatTurn[]
   currentPage?: CurrentPage
   recentObservations: PageObservation[]
   /**
@@ -63,6 +57,4 @@ export interface AgentSession {
    */
   pageExposedKeys?: Record<string, string[]>
   activeRun?: AgentRun
-  /** 当前连接 ID；断线时清空，session 本身保留 */
-  socketId?: string
 }

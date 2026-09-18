@@ -2,12 +2,17 @@
 //
 // 典型用法（宿主 main.ts / App.vue）：
 // ```ts
-// import { createVueHostRuntime } from '@webassistant/wc-runtime-vue/host-router'
+// import { createVueHostRuntimeBinding } from '@webassistant/wc-runtime-vue/host-router'
 //
-// const makeRuntime = ({ initial }) => createVueHostRuntime({
-//   router,                                            // 宿主真实 vue-router
-//   app,                                               // 可选：provide runtime context 给页面
-//   manifestUrl: '/wc/manifest.json',
+// // 推荐：一次给 router/app/services，拿回可直接摊给 useWebAssistant 的注入口
+// const { createRuntime } = createVueHostRuntimeBinding({ router, app, services })
+// useWebAssistant({ createRuntime, services })
+//
+// // 或者直接用底层函数（需要自定义时）：
+// const makeRuntime = ({ base, initial }) => createVueHostRuntime({
+//   router,
+//   app,
+//   manifestUrl: `${base}/manifest.json`,   // ← 这个映射容易写错，binding 已封装
 //   initial,
 // })
 // ```
@@ -18,10 +23,19 @@
 //   - **agent 能看到什么全由宿主决定**：runtime 不自动采集任何请求；
 //     宿主在需要的地方 `apiBus.report({ source, data })` 显式上报一次即可（不调 = 零数据出网）
 //   - 只在一个位置挂载（apiBus 是全局单例）
+//   - manifest 与容器模式（用法 A）**共用同一份**：其中的 `containers` / `pages[].bundle`
+//     由宿主渲染面归一化为空（见 wc-runtime-core 的 `forHostSurface`），不会去加载 bundle
 import { createRuntime, type CreateRuntimeOptions, type Runtime } from '@webassistant/wc-runtime-core'
 import type { App } from 'vue'
 import type { Router } from 'vue-router'
 import { createVueHostSurface } from './hostSurface.js'
+import {
+  DEFAULT_MANIFEST_BASE,
+  resolveHostManifestUrl,
+  type HostRuntimeContextLike,
+} from './hostManifestUrl.js'
+
+export { resolveHostManifestUrl, DEFAULT_MANIFEST_BASE, type HostRuntimeContextLike }
 
 export interface CreateVueHostRuntimeOptions
   extends Omit<CreateRuntimeOptions, 'surface' | 'hostSurface' | 'adapters'> {
@@ -72,4 +86,38 @@ export function createVueHostRuntime(options: CreateVueHostRuntimeOptions): Runt
   })
 
   return runtime
+}
+
+export interface CreateVueHostRuntimeBindingOptions extends CreateVueHostRuntimeOptions {
+  /**
+   * manifest 地址。缺省按 chat-client 的上下文基址拼 `{base}/manifest.json`（base 缺省 '/wc'）。
+   */
+  manifestUrl?: string
+}
+
+/**
+ * 把「宿主直连 runtime」与 chat-client 的 runtime 注入口**对齐成一个对象**：
+ *
+ * ```ts
+ * const { createRuntime } = createVueHostRuntimeBinding({ router, app, services })
+ * const assistant = useWebAssistant({ createRuntime, services })   // surface 缺省即 host
+ * ```
+ *
+ * 收敛掉宿主每次都要手写的两处映射（都是**错了不报错**的那种）：
+ *   - `context.base → manifestUrl`（写错只是拿不到页面目录，agent 静默失明）
+ *   - `context.initial → initial`（漏了 `initialPage` 就静默失效）
+ */
+export function createVueHostRuntimeBinding(
+  options: CreateVueHostRuntimeBindingOptions,
+): { createRuntime: (context?: HostRuntimeContextLike) => Runtime } {
+  const { manifestUrl, initial: defaultInitial, ...rest } = options
+  return {
+    createRuntime: (context?: HostRuntimeContextLike) =>
+      createVueHostRuntime({
+        ...rest,
+        manifestUrl: resolveHostManifestUrl(manifestUrl, context),
+        // host 模式：不传 initial 时不自动打开任何页面（页面由宿主 URL 决定），`null` 即此意
+        initial: context?.initial ?? defaultInitial ?? null,
+      }),
+  }
 }

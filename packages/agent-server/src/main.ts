@@ -20,16 +20,21 @@ if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
 function applyCliArgs(): void {
   const args = process.argv.slice(2)
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '--manifest' && args[i + 1]) process.env.MANIFEST_PATH = args[++i]
-    else if (args[i] === '--manifest-url' && args[i + 1]) process.env.MANIFEST_URL = args[++i]
-    else if (args[i] === '--port' && args[i + 1]) process.env.PORT = args[++i]
+    if (args[i] === '--manifest' && args[i + 1]) {
+      // CLI 优先于 .env：两种来源互斥，否则 .env 里的 MANIFEST_URL 会盖掉 --manifest（静默失效）
+      process.env.MANIFEST_PATH = args[++i]
+      process.env.MANIFEST_URL = ''
+    } else if (args[i] === '--manifest-url' && args[i + 1]) {
+      process.env.MANIFEST_URL = args[++i]
+      process.env.MANIFEST_PATH = ''
+    } else if (args[i] === '--port' && args[i + 1]) process.env.PORT = args[++i]
   }
 }
 
 function describeManifestSource(): string {
   if (process.env.MANIFEST_URL) return process.env.MANIFEST_URL
   if (process.env.MANIFEST_PATH) return process.env.MANIFEST_PATH
-  return '（默认 demo-app/manifest.json）'
+  return '（默认 demo-app/public/wc/manifest.json）'
 }
 
 async function bootstrap(): Promise<void> {

@@ -40,7 +40,8 @@ export interface PageChangeInfo {
 
 /**
  * 宿主构造 runtime 的上下文（`createRuntime` 注入口的入参）。
- * host 模式（`surface: 'host'`）下宿主用 `createVueHostRuntime({ router, app, ... })` 造出 runtime 返回；
+ * host 模式（`surface: 'host'`）下宿主用 `createVueHostRuntimeBinding` 造出 `createRuntime` 返回；
+ * 或直接 `({ base, initial }) => createVueHostRuntime({ router, app, manifestUrl: base + '/manifest.json', initial })`；
  * container 模式（缺省）不需要这个注入口，chat-client 自己按 `wcBase` 拉 manifest + dist-ce。
  */
 export interface WebAssistantRuntimeContext {
@@ -56,23 +57,26 @@ export interface WebAssistantProps {
   /** manifest 在 {wcBase}/manifest.json，WC 产物在 {wcBase}/dist-ce */
   wcBase?: string
   /**
-   * 渲染面（用法）：
-   * - `container`（缺省）：WC 用法 —— 页面编译成 Web Component，在面板内的渲染区渲染
-   * - `host`：宿主直连用法 —— agent 操作宿主自己的 router，页面在宿主自己的 `<router-view>` 渲染
-   *   （必须同时给 `createRuntime`，由宿主提供 `createVueHostRuntime` 造出的 runtime）
+   * 渲染面（用法）。**缺省自动推导**（见 `lib/surface.ts`）：
+   * - 给了 `createRuntime` ⇒ `host`：宿主直连 —— agent 操作宿主自己的 router，
+   *   页面在宿主自己的 `<router-view>` 渲染
+   * - 否则 ⇒ `container`：WC 用法 —— 页面编译成 Web Component，在面板内的渲染区渲染
+   *
+   * 显式传入时以此为准；显式 `host` 必须同时给 `createRuntime`（由宿主提供
+   * `createVueHostRuntime` 造出的 runtime）。**不要**为了「保险」两边都传 —
+   * 只给 `createRuntime` 而漏 `surface`（或反之）在归一化前会静默错配。
    */
   surface?: RuntimeSurfaceKind
   /**
-   * runtime 构造注入口（host 模式必填）。chat-client 借此保持框架无关（不 import vue-router）：
+   * runtime 构造注入口（宿主直连 / host 模式必填；给了它 `surface` 缺省即为 `host`）。
+   * chat-client 借此保持框架无关（不 import vue-router）：
    * ```ts
-   * :create-runtime="({ initial }) => createVueHostRuntime({ router, app, manifestUrl: '/wc/manifest.json', initial })"
+   * :create-runtime="createRuntime"   // 来自 createVueHostRuntimeBinding({ router, app, services })
    * ```
    */
   createRuntime?: (context: WebAssistantRuntimeContext) => Runtime
   /** WebSocket 地址前缀（默认 '/ws'） */
   wsBase?: string
-  /** agent-server HTTP 地址前缀（保留，用于 future HTTP 降级） */
-  agentBase?: string
   /**
    * 注入业务 WC 的宿主能力。**必须框架无关**（纯函数 / 纯数据 / 订阅回调）：
    * request、t、getToken、theme、state、emit —— 不要传 pinia store / vue-i18n 实例。
@@ -93,8 +97,6 @@ export interface WebAssistantProps {
    * ```
    */
   onRuntimeReady?: (runtime: Runtime) => void
-  /** 把页面 emit 回传给 agent（POST {agentBase}/event）；MVP 默认关闭，避免打扰 agent */
-  forwardPageEvents?: boolean
   /**
    * 在渲染区右侧显示「执行监视」日志面板：WC 活动时间线
    * （方法调用 / 导航 / 事件 / 数据上报 / 网络 / 错误，最新在前）。缺省关闭。
@@ -212,6 +214,75 @@ export interface WebAssistantThemeVars {
   '--wa-error-text'?: string
 }
 
+/**
+ * `<HostAssistantDock>` 的 props —— **宿主直连面（用法 B）开箱即用**的悬浮助手窗。
+ *
+ * 与 `<WebAssistant>` 的分工：`WebAssistant` 面向**容器面**（面板里有渲染区，页面在这里渲染）；
+ * dock 面向**宿主直连面**（页面在宿主自己的 `<router-view>`，面板只承载对话 + 运行状态 + 动作时间线）。
+ * 它把接线（`useWebAssistant` + socket + 收起/展开 + 状态行）都做完，宿主只需给它一个 `createRuntime`：
+ *
+ * ```vue
+ * <script setup lang="ts">
+ * import { createVueHostRuntimeBinding } from '@webassistant/wc-runtime-vue/host-router'
+ * import { HostAssistantDock } from '@webassistant/chat-client'
+ *
+ * const { createRuntime } = createVueHostRuntimeBinding({ router, app, services })
+ * </script>
+ * <template>
+ *   <RouterView />
+ *   <!-- ⚠️ 必须挂在 <router-view> 之外：挂路由组件里的话，agent 一导航面板自己就被卸载 -->
+ *   <HostAssistantDock :create-runtime="createRuntime" :services="services" />
+ * </template>
+ * ```
+ *
+ * 要更深的定制（换布局 / 只取一部分）就用 headless 的 `useWebAssistant()`，
+ * 或直接复用 `HostAssistantChat` + `HostAssistantActivities` 这两个「数据进、事件出」的组件。
+ */
+export interface HostAssistantDockProps {
+  /**
+   * ★ 宿主直连 runtime 的注入口（给了它，渲染面缺省即推导为 `host`）：
+   * `createVueHostRuntimeBinding({ router, app, services }).createRuntime`
+   */
+  createRuntime: (context: WebAssistantRuntimeContext) => Runtime
+  /** 宿主能力（框架无关；建议与传给 runtime 的是同一份） */
+  services?: RuntimeServices
+  /** WebSocket 地址前缀（默认 '/ws'） */
+  wsBase?: string
+  /** 面板标题（缺省 'WebAssistant'） */
+  title?: string
+  /** 头部徽标文案（缺省 '宿主直连'；传空串可隐藏） */
+  badge?: string
+  /** 初始是否展开（缺省 `true`） */
+  defaultOpen?: boolean
+  /** 收起后按钮上的文案（缺省 '打开助手'） */
+  openLabel?: string
+  /** 输入框占位 */
+  placeholder?: string
+  /** 空态建议（点一下即发送）；`[]` = 不显示建议区 */
+  suggestions?: string[]
+  /** 空态标题 / 说明 */
+  helloTitle?: string
+  helloHint?: string
+  /** 状态行（连接 / 导航来源 / runtime / 当前页 expose）缺省显示 */
+  showStatusLine?: boolean
+  /** 「本轮动作」时间线缺省显示 */
+  showActivities?: boolean
+  /** 「本轮动作」初始是否展开（缺省收起） */
+  activitiesDefaultOpen?: boolean
+  /** 回传活动条数上限（缺省 200，见 `UseRuntimeHostOptions.activityLimit`） */
+  activityLimit?: number
+  /** 停靠在哪个角（缺省 `bottom-right`） */
+  placement?: 'bottom-right' | 'bottom-left'
+  /** 调试：把 runtime 挂到 `globalThis.__waRuntime`、活动打 console（透传 `useWebAssistant` 的 debug） */
+  debug?: boolean
+  /**
+   * runtime 就绪回调（init 之后一次）。宿主在这里接自己的东西：
+   * 宿主 store → 页面 store 的快照桥、自定义控制台句柄等。
+   */
+  onRuntimeReady?: (runtime: Runtime) => void
+}
+
 export type { PageEventPayload, Runtime, RuntimeErrorInfo, RuntimeRoute, RuntimeServices, RuntimeStatus }
+export type { NavigationSource, RuntimeSurfaceKind }
 export type { WelcomeCapability, WelcomePayload }
 export type { WelcomeVariant }

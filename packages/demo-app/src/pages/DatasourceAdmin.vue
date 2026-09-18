@@ -1,153 +1,269 @@
 <template>
-  <!-- @description 数据源管理页，用类型写法声明 props/emits，支持保存、刷新与提交新建数据源 -->
-  <div id="cssinjs-probe" class="cssinjs-probe-p1 cssinjs-probe-direct" style="padding: 16px;">
-    <h2 style="margin: 0 0 16px; font-size: 18px;">数据源管理</h2>
-    <!-- 宿主 store 镜像：页面代码零改动读 pinia（值由宿主推来）——见 src/ce/container.ts 的 createStoreMirror -->
-    <div
-      style="
-        margin: 0 0 12px;
-        padding: 8px 12px;
-        border-radius: 6px;
-        background: rgb(238, 242, 255);
-        color: rgb(67, 56, 202);
-        font-size: 12px;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-      "
-    >
+  <!-- @description 数据源管理页：展示数据源列表，支持带 token 的自检请求与新增数据源 -->
+  <div>
+    <PageHeader title="数据源管理" description="演示宿主 store 镜像、token 注入与「只读 + 新增」的页面级规则">
+      <template #actions>
+        <el-button size="small" :loading="loading" @click="refresh()">刷新</el-button>
+        <el-button size="small" type="primary" @click="openCreate">新增数据源</el-button>
+      </template>
+    </PageHeader>
+
+    <CapabilityBadge
+      :items="['页面级 rules', '类型化 props/emits', 'call_page_method', '宿主 store 镜像', '观测面 report']"
+      hint="本页的类型写在 src/types/datasource.ts（跨文件自定义类型 → analyzer 展开进 manifest）；页面级规则见 rules/datasource-page.md"
+    />
+
+    <!-- 宿主 store 镜像：页面代码零改动读 pinia。
+         容器模式：值由宿主推来（容器 createStoreMirror + 宿主 createHostStorePusher）
+         宿主直连模式：就是宿主自己的 store 实例 -->
+    <div class="mirror">
       <span>
-        store 镜像：{{ auth.user?.name ?? '未登录' }}（{{ auth.user?.role ?? '—' }}）· token
-        {{ auth.token ? auth.token.slice(0, 12) + '…' : '（空）' }}
+        当前身份：{{ auth.user ? `${auth.user.name}（${auth.user.role}）` : '未登录' }} · token
+        {{ auth.token ? `${auth.token.slice(0, 10)}…` : '（空）' }}
       </span>
-      <span>· 接口依赖 store 的 token 时看这里：{{ authEcho }}</span>
-      <el-button size="small" @click="whoami">带 token 请求一次 /api/whoami</el-button>
+      <el-button size="small" link type="primary" @click="whoami()">
+        带 token 请求一次 /api/whoami
+      </el-button>
+      <span class="echo">{{ authEcho }}</span>
     </div>
-    <el-table :data="rows" border>
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="host" label="主机" />
-      <el-table-column prop="port" label="端口" width="100" />
-      <el-table-column label="状态" width="110">
-        <template #default="{ row }">
-          <el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="负责人" width="140">
-        <template #default="{ row }">{{ row.owner?.displayName ?? '—' }}</template>
-      </el-table-column>
-    </el-table>
-    <div style="margin-top: 16px; display: flex; gap: 8px;">
-      <el-button type="primary" @click="onSubmit">提交</el-button>
-      <el-button @click="refresh(true)">刷新</el-button>
-    </div>
+
+    <p v-if="notice" class="notice">{{ notice }}</p>
+
+    <PageState
+      :loading="loading"
+      :error="error"
+      :empty="!rows.length"
+      empty-text="暂无数据源"
+      @retry="refresh()"
+    >
+      <el-table :data="rows" border @row-click="onSelect">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="name" label="名称" width="150" />
+        <el-table-column prop="host" label="主机" />
+        <el-table-column prop="port" label="端口" width="90" />
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">{{ row.kind }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 'active' ? 'success' : 'info'">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="负责人" width="120">
+          <template #default="{ row }">{{ row.owner?.displayName ?? '—' }}</template>
+        </el-table-column>
+      </el-table>
+    </PageState>
+
+    <el-dialog v-model="createVisible" title="新增数据源" width="420px">
+      <p v-if="prefillHint" class="prefill">{{ prefillHint }}</p>
+      <el-form label-width="72px">
+        <el-form-item label="名称">
+          <el-input v-model="form.name" />
+        </el-form-item>
+        <el-form-item label="主机">
+          <el-input v-model="form.host" />
+        </el-form-item>
+        <el-form-item label="端口">
+          <el-input v-model.number="form.port" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="onSubmit">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-// 本页刻意使用「类型写法」声明 props / emits，并且类型都来自跨文件 import ——
-// 用来验收 analyzer 的 vue-tsc 内核是否把自定义类型展开成真实字段结构。
+// 数据源管理 —— 三件事集中在这页：
+//   ① 类型验收：props/emits **刻意用类型写法**且类型来自跨文件 import（src/types/datasource.ts），
+//      analyzer 的 vue-tsc 内核要把自定义类型展开成真实字段结构写进 manifest
+//      （见 docs/analyzer-type-resolution.md）
+//   ② 页面级规则：rules/datasource-page.md 只在本页生效，agent 的 system prompt 里会出现在本页条目下
+//   ③ 宿主 store 镜像：页面直接 `useAuthStore()`，容器模式下的值由宿主快照桥推来，代码零改动
+//   ④ agent 只填不交：只 expose「只读 + 预填」（refresh / openCreateDialog），写后端的 save / onSubmit
+//      刻意不进 defineExpose —— agent 想直接落库也调不到（统一约定见 src/utils/agentPreset.ts）
 import { computed, onMounted, ref } from 'vue'
-import { DatasourceKind } from '../types/datasource'
-import type { DatasourceOwner, DatasourceRequest, DatasourceVO } from '../types/datasource'
-import { injectByAppendChild, injectByInsertRule } from '../vendor/fakeCssInJs'
-import http from '../utils/request'
+import PageHeader from '../components/PageHeader.vue'
+import PageState from '../components/PageState.vue'
+import CapabilityBadge from '../components/CapabilityBadge.vue'
+import { listDatasources, saveDatasource } from '../api/datasources'
+import { whoami as whoamiApi } from '../api/session'
+import { reportData } from '../utils/httpClient'
+import { AGENT_PREFILL_HINT, hasAgentPreset, mergeAgentPreset, prefillReceipt } from '../utils/agentPreset'
 import { useAuthStore } from '../stores/authStore'
+import type { AgentPrefillReceipt } from '../utils/agentPreset'
+import type {
+  DatasourceCreateForm,
+  DatasourceOwner,
+  DatasourceRequest,
+  DatasourceVO,
+} from '../types/datasource'
 
 const props = defineProps<{
-  // 外部可注入数据源列表；不传则用内置 mock
+  /** 外部可注入数据源列表；不传则从接口拉取 */
   sources?: DatasourceVO[]
-  // 负责人信息（演示嵌套自定义类型展开）
+  /** 负责人信息（演示嵌套自定义类型展开） */
   owner?: DatasourceOwner
-  // 只展示启用中的数据源
+  /** 只展示启用中的数据源 */
   onlyEnabled?: boolean
 }>()
 
 const emit = defineEmits<{
-  // 提交新建数据源
+  /** 提交新建数据源（成功落库后触发） */
   submit: [payload: DatasourceRequest]
-  // 选中某条数据源
+  /** 选中某条数据源 */
   select: [source: DatasourceVO]
-  // 关闭（可选原因）
-  close: [reason?: string]
 }>()
 
-const mockSources: DatasourceVO[] = [
-  {
-    id: 1,
-    name: '主库',
-    host: '10.0.0.1',
-    port: 3306,
-    tags: ['prod'],
-    enabled: true,
-    status: 'active',
-    kind: DatasourceKind.MySQL,
-    owner: { id: 1, displayName: '张三' },
-  },
-]
+const auth = useAuthStore()
+const fetched = ref<DatasourceVO[]>([])
+const loading = ref(false)
+const saving = ref(false)
+const error = ref('')
+const notice = ref('')
+const authEcho = ref('（未请求）')
 
 const rows = computed(() => {
-  const list = props.sources?.length ? props.sources : mockSources
+  const list = props.sources?.length ? props.sources : fetched.value
   return props.onlyEnabled ? list.filter((item) => item.enabled) : list
 })
 
-// —— 宿主 store 镜像示例 ——
-// 页面里就是普通的 `useAuthStore()`：CE 模式下值由宿主推来（容器 createStoreMirror），SPA 模式下是本应用的 store。
-// 本批次 pinia 与宿主 pinia 是**两个实例**（两份 vue 副本），数据靠快照单向同步，不是共享实例。
-const auth = useAuthStore()
-const authEcho = ref('（未请求）')
+async function load(): Promise<void> {
+  loading.value = true
+  error.value = ''
+  try {
+    fetched.value = await listDatasources()
+  } catch (cause) {
+    const message = (cause as Error).message
+    fetched.value = []
+    error.value = message
+    // 不带 url：错误载荷要原样出网，不能走 dataSources 的字段白名单
+    reportData('datasource-list-error', { message, url: '/api/datasources' })
+  } finally {
+    loading.value = false
+  }
+}
 
-/** 带 token 请求一次：验证「宿主 store 的 token → 请求头」链路（容器 setup 里的 axios 拦截器按需现读 getToken） */
+/** 带 token 请求一次：验证「宿主 store 的 token → 请求头」链路（容器 setup 的 axios 拦截器现读 getToken） */
 async function whoami(): Promise<void> {
   try {
-    const data = await http<{ authorization: string | null }>('/api/whoami')
+    const data = await whoamiApi()
     authEcho.value = data.authorization ?? '（服务端没收到 Authorization）'
   } catch (cause) {
     authEcho.value = `请求失败：${(cause as Error).message}`
   }
 }
 
-/** 保存数据源，返回保存后的完整对象（agent 可据返回值继续规划） */
-async function save(data: DatasourceRequest): Promise<DatasourceVO> {
-  // emit('submit', data)
-  return {
-    id: 0,
-    name: data.name,
-    host: data.host,
-    port: data.port ?? 0,
-    tags: [],
-    enabled: true,
-    status: 'active',
-    kind: DatasourceKind.MySQL,
-    owner: data.owner ?? null,
+// —— 新增数据源 ——
+/** 弹窗默认值：本地按钮与 agent 预填共用（agent 只覆盖它显式传入的字段） */
+const DEFAULT_CREATE_FORM: DatasourceCreateForm = { name: '', host: '127.0.0.1', port: 3306 }
+const createVisible = ref(false)
+const prefillHint = ref('')
+const form = ref<DatasourceCreateForm>({ ...DEFAULT_CREATE_FORM })
+
+/** 本地「新增数据源」按钮：清空表单重开（与 agent 入口同一条路径） */
+function openCreate(): void {
+  openCreateDialog()
+}
+
+/** agent 可调用（只预填、不提交）：打开「新增数据源」弹窗并用 preset 预填，返回表单快照 —— 只打开、不落库，提交仍由用户点「确定」（save / onSubmit 未 expose） */
+function openCreateDialog(
+  preset?: Partial<DatasourceCreateForm>,
+): AgentPrefillReceipt<DatasourceCreateForm> {
+  form.value = mergeAgentPreset(DEFAULT_CREATE_FORM, preset)
+  createVisible.value = true
+  prefillHint.value = hasAgentPreset(preset) ? AGENT_PREFILL_HINT : ''
+  return prefillReceipt('新增数据源', form.value)
+}
+
+function onSelect(row: DatasourceVO): void {
+  emit('select', row)
+}
+
+/** 保存数据源并返回落库后的完整对象（含 id）—— 只给人点的「确定」走；agent 侧未 expose */
+async function save(payload: DatasourceRequest): Promise<DatasourceVO> {
+  saving.value = true
+  notice.value = ''
+  try {
+    const created = await saveDatasource({
+      ...payload,
+      owner: payload.owner ?? props.owner,
+      status: payload.status ?? 'active',
+    })
+    notice.value = `已保存：${created.name}（id=${created.id}）`
+    return created
+  } catch (cause) {
+    error.value = (cause as Error).message
+    throw cause
+  } finally {
+    saving.value = false
   }
 }
 
-/** 重新拉取数据源列表，返回条数 */
-async function refresh(force?: boolean): Promise<number> {
-  if (force) emit('close', 'refresh')
+/** 弹窗「确定」：保存 → 关弹窗 → 刷新列表（只给人点；agent 调不到） */
+function onSubmit(): void {
+  const payload: DatasourceRequest = {
+    name: form.value.name || '未命名数据源',
+    host: form.value.host,
+    port: form.value.port,
+    owner: props.owner,
+  }
+  void save(payload)
+    .then((created) => {
+      createVisible.value = false
+      emit('submit', payload)
+      void load()
+      void created
+    })
+    .catch(() => undefined)
+}
+
+/** agent 可调用（只读）：重新拉取列表，返回条数 */
+async function refresh(): Promise<number> {
+  await load()
   return rows.value.length
 }
 
-function onSubmit(): void {
-  void save({ name: '新数据源', host: '127.0.0.1', owner: props.owner })
-}
+// 执行面只留「只读 + 预填」：写入方法（save / onSubmit）刻意不 expose，agent 无法直接下发数据
+defineExpose({ refresh, openCreateDialog })
 
-defineExpose({ save, refresh, onSubmit })
-
-// —— styleShim 验收探针 ——
-// 走「模拟 CSS-in-JS 依赖」的两条注入路径（P1 / P2），从裸 document 往 head 注入样式。
-// 构建成 WC 后，它们会被镜像进容器 <runtime-vue> 的 shadow root，从而作用到本页（见 vite.ce.config.ts）。
-onMounted(() => {
-  injectByAppendChild('.cssinjs-probe-p1{outline:3px dashed rgb(22,163,74)}')
-  injectByInsertRule('#cssinjs-probe{background:rgb(240,253,244)}')
-
-  // —— 对照项：**页面自身**直写 document ——
-  // 本页面不在 styleShim.packages 名单里，所以页面里的裸 document 不会被遮蔽，
-  // 这条规则**不会**进 shadow root（用来印证「遮蔽只对被指定包生效」）。
-  const direct = document.createElement('style')
-  direct.textContent = '.cssinjs-probe-direct{outline:3px solid rgb(220,38,38)}'
-  document.head.appendChild(direct)
-})
+onMounted(() => void load())
 </script>
+
+<style scoped>
+.mirror {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--app-space-3);
+  padding: var(--app-space-2) var(--app-space-3);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  font-size: 12px;
+  color: var(--app-text-secondary);
+}
+.echo {
+  color: var(--app-text-muted);
+}
+.notice {
+  margin: 0 0 var(--app-space-3);
+  font-size: 12px;
+  color: var(--app-success);
+}
+.prefill {
+  margin: 0 0 var(--app-space-3);
+  padding: var(--app-space-2) var(--app-space-3);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-primary-weak);
+  color: #4338ca;
+  font-size: 12px;
+}
+:deep(.el-table__row) {
+  cursor: pointer;
+}
+</style>

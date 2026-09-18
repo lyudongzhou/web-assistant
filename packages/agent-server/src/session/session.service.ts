@@ -8,8 +8,12 @@ import type {
 } from '@webassistant/protocol'
 import { MemorySessionStore, type SessionStore } from './session.store.js'
 
+/**
+ * 僵尸会话兜底回收窗口（仅异常路径）。
+ * 正常路径下会话在连接断开时由 `destroy()` **立即**回收；这个 TTL 只兜底
+ * 「连接未触发 disconnect」（进程异常、半开连接）的残留，语义是回收而非保活。
+ */
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 30 * 60 * 1000)
-const MAX_HISTORY = 10
 const MAX_OBSERVATIONS = 100
 
 export type ObservationWaitResult =
@@ -35,36 +39,37 @@ export class SessionService implements OnModuleDestroy {
     this.cleanupTimer.unref()
   }
 
-  createOrResume(sessionId?: string): { session: AgentSession; resumed: boolean } {
-    const existing = sessionId ? this.store.get(sessionId) : undefined
-    if (existing) {
-      existing.lastSeenAt = Date.now()
-      return { session: existing, resumed: true }
-    }
-
+  /**
+   * 创建一个新会话（**会话 = 连接**：每次握手都新建，不复用客户端传来的 id）。
+   * 会话上下文随连接销毁，见 `destroy()`。
+   */
+  create(): AgentSession {
     const session: AgentSession = {
-      id: sessionId || randomUUID(),
+      id: randomUUID(),
       createdAt: Date.now(),
       lastSeenAt: Date.now(),
-      history: [],
       recentObservations: [],
     }
     this.store.set(session)
-    return { session, resumed: false }
+    return session
+  }
+
+  /**
+   * 销毁会话（连接断开时调用）：删除会话本体，并**立即结束**挂在该会话上的观察等待。
+   * 不这样清理的话，`waitForObservation` 只能等自己的 timeout 结束 —— 白占计时器、白等一段时间。
+   */
+  destroy(sessionId: string): void {
+    this.store.delete(sessionId)
+    for (const [id, waiter] of this.waiters) {
+      if (waiter.sessionId !== sessionId) continue
+      clearTimeout(waiter.timer)
+      this.waiters.delete(id)
+      waiter.resolve({ status: 'failed', error: 'session destroyed' })
+    }
   }
 
   touch(session: AgentSession): void {
     session.lastSeenAt = Date.now()
-  }
-
-  bindSocket(session: AgentSession, socketId: string): void {
-    session.socketId = socketId
-    this.touch(session)
-  }
-
-  unbindSocket(session: AgentSession, socketId: string): void {
-    if (session.socketId === socketId) session.socketId = undefined
-    this.touch(session)
   }
 
   recordNavigation(session: AgentSession, page: CurrentPage): void {
@@ -109,14 +114,6 @@ export class SessionService implements OnModuleDestroy {
       }, timeoutMs)
       this.waiters.set(id, { sessionId, match, timer, resolve })
     })
-  }
-
-  addHistory(session: AgentSession, role: 'user' | 'assistant' | 'system', content: string): void {
-    session.history.push({ role, content, createdAt: Date.now() })
-    if (session.history.length > MAX_HISTORY) {
-      session.history.splice(0, session.history.length - MAX_HISTORY)
-    }
-    this.touch(session)
   }
 
   find(sessionId: string): AgentSession | undefined {

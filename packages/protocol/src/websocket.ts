@@ -31,9 +31,13 @@ export const SERVER_MESSAGE = {
 
 export type ToolName = 'render' | 'wait_for_observation' | 'call_page_method'
 
+/**
+ * 握手消息。**不带会话标识**：会话是连接作用域的（一个会话 = 一条连接），
+ * 服务端在收到本消息时创建新会话并在 `session.ready` 中回传 id。
+ * 客户端不持久化、也不复用任何会话 id（刷新/重连即新会话）。
+ */
 export interface SessionHelloMessage {
   t: 'session.hello'
-  sessionId?: string
   wcBase: string
   manifestVersion: number
 }
@@ -137,8 +141,8 @@ export type ClientMessage =
 
 export interface SessionReadyMessage {
   t: 'session.ready'
+  /** 本次连接新建会话的 id（连接作用域：断开即失效，客户端不持久化） */
   sessionId: string
-  resumed: boolean
   manifestVersion: number
   /**
    * 连接建立时 agent 下发的欢迎载荷（可选）：

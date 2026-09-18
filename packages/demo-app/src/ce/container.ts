@@ -5,13 +5,14 @@
 // - store 镜像       → 宿主 pinia 的数据按快照 hydrate 进本批同名 store（createStoreMirror）
 // - router           → runtime 自动 createVueRouter 并桥接（无需手动）
 // - element-plus     → plugins 注册 + shadowStyles(基座) + lightDomStyles(浮层补丁)
-// - tailwind         → 编译产物 ?inline 进 shadowStyles(base 层)，页面 class 生效
+// - tailwind/tokens  → 编译产物 ?inline 进 shadowStyles（页面 class 与设计 token 生效）
 // - axios            → 这里创建实例 + setHttp 接管老代码；**不做自动上报**（上报由调用点显式决定）
 import { createStoreMirror, defineVueContainer } from '@webassistant/wc-runtime-vue'
 import ElementPlus from 'element-plus'
 import elementPlusCss from 'element-plus/dist/index.css?inline'
 import { createPinia } from 'pinia'
 import tailwindCss from './tailwind.css?inline'
+import tokensCss from '../styles/tokens.css?inline'
 import { setHttp, type RequestFn } from '../utils/request'
 import { httpClient } from '../utils/httpClient'
 
@@ -25,9 +26,9 @@ export default defineVueContainer({
   //    pinia 上的插件：本批每个 store 创建时自动挂上「宿主快照 → 本 store」的镜像
   plugins: [createPinia().use(storeMirror.plugin), ElementPlus],
 
-  // ③ tailwind + element-plus：base 层进容器 shadow root（:root 自动重写为 :host）
-  //    tailwind 放前面做 reset，EP 样式在其上覆盖
-  shadowStyles: [tailwindCss, elementPlusCss],
+  // ③ tokens + tailwind + element-plus：base 层进容器 shadow root（:root 会自动重写为 :host）
+  //    tokens 放最前（设计变量），tailwind 做 reset，EP 样式在其上覆盖
+  shadowStyles: [tokensCss, tailwindCss, elementPlusCss],
   // element-plus 浮层（el-select 下拉 / tooltip / dialog）teleport 到 body，跑出 shadow 边界，
   // 已知泄漏点，补一份光 DOM 样式
   lightDomStyles: [elementPlusCss],

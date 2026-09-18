@@ -41,6 +41,18 @@ test('analyze：无 container（宿主直连批次，用法 B）→ 不写 conta
   assert.equal(manifest.pages[0].path, '/users')
 })
 
+test('analyze：wc.pages.json 的 dataSources 原样进 manifest.pages[].dataSources', async () => {
+  const manifest = await analyze({ configPath, noAi: true })
+
+  const page = manifest.pages.find((p) => p.tag === 'user-list')
+  assert.deepEqual(page.dataSources, [
+    { match: '/api/users', fields: ['id', 'name', 'role'], maxRows: 20, primaryKey: 'id' },
+  ])
+  // 未声明 dataSources 的页面不写字段（避免噪音）
+  const plain = manifest.pages.find((p) => p.tag === 'plain')
+  assert.equal(plain.dataSources, undefined)
+})
+
 test('analyze：声明 container（WC 批次）→ 照旧写 containers 与 pages[].bundle', async () => {
   // 复制 fixture 到临时目录并补上 container（避免污染仓库内 fixture）
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-analyze-'))

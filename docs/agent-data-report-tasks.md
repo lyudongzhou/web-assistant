@@ -60,6 +60,6 @@
 | R5 | protocol | observation.ts / websocket.ts / session.ts | 删 4 个 `PageNetwork*` 与 `page.network.*` 消息、`pendingRequests`；`ObservationMatch` 改 `source` / `event` / `contains` | ✅ |
 | R6 | agent-server | gateway / session.service / manifest.service / agent.service | 删 4 个 network handler、pending 逻辑、prompt 网络分支；工具描述改为「等待显式上报」 | ✅ |
 | R7 | chat-client | useRuntimeHost / useWebAssistant / agentSocket | 删 `onNetworkObservation` / `sendObservation` / `network` 活动类型 | ✅ |
-| R8 | demo-app | httpClient.ts / UserList.vue / UserDetail.vue / host-main.ts | 去掉 axios 拦截器自动上报 → 调用点显式 `reportData` | ✅ |
+| R8 | demo-app | httpClient.ts / UserList.vue / UserDetail.vue / host-main.ts（现已并入 `src/components/AssistantDock.vue`） | 去掉 axios 拦截器自动上报 → 调用点显式 `reportData` | ✅ |
 | R9 | 文档 | agent-session / INTEGRATION_GUIDE / PROJECT / TODO / README | 全量改写为「显式上报」口径 | ✅ |
 

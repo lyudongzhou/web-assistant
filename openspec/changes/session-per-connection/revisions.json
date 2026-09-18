@@ -1,0 +1,25 @@
+{
+  "changeId": "session-per-connection",
+  "revisions": [
+    {
+      "id": "rev-9f1c4e7a",
+      "description": "协议契约变更：会话由 connection-decoupled（sessionId 存 sessionStorage、断线重连 resumed: true 恢复）反转为 connection-scoped（会话 = 连接）。SessionHelloMessage 删 sessionId?、SessionReadyMessage 删 resumed、AgentSession 删 history 与 socketId（连带 ChatTurn/ChatTurnRole）；服务端 SessionService.createOrResume → create() + destroy()（含清理观察等待），gateway.handleHello 每次新建、handleDisconnect 依次 abort → destroy → rpc.unregister → disposeSession；客户端不再读写任何存储、hello 不带会话标识、新增 startNewSession() 与 onSessionReset（重连 = 新会话 → 清空并提示）；多轮由会话内长驻 AgentRuntime 承载（prepareTurn 每轮投影 buildAgentContext 并按 MAX_TURN_MESSAGES 裁剪），同会话串行（gateway 显式拒绝并发 chat.send）",
+      "author": "AI",
+      "createdAt": "2026-09-17T00:00:00.000Z",
+      "metadata": {
+        "type": "contract",
+        "affectedAPI": "ws session.hello / session.ready（协议字段删除）",
+        "affectedField": "sessionId / resumed；AgentSession.history / socketId",
+        "updateTarget": [
+          "specs",
+          "design",
+          "delta-specs"
+        ],
+        "source": {
+          "file": "packages/agent-server/src/gateway/agent.gateway.ts + packages/agent-server/src/session/session.service.ts + packages/agent-server/src/agent/agent.service.ts + packages/chat-client/src/lib/agentSocket.ts",
+          "function": "handleHello / handleDisconnect / create / destroy / getOrCreateAgent / prepareTurn / createAgentSocket"
+        }
+      }
+    }
+  ]
+}

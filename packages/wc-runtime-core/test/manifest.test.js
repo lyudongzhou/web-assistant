@@ -99,6 +99,49 @@ test('manifest：绝对地址不拼 assetBase', () => {
   assert.equal(m.routes[0].bundle, 'https://cdn/x.js')
 })
 
+test('manifest：宿主渲染面把 WC 资产归一为空 —— 容器形状的 manifest 也逐字段等价', () => {
+  // 「一份清单 → 一份 manifest」的前提：喂进来的是容器形状（含 containers 与每页 bundle），
+  // 宿主面归一化后必须与「host 专属 manifest」等价 —— 页面目录照旧，WC 资产全空。
+  const hostSide = normalizeManifest(makeManifest(), {
+    assetBase: '/wc/dist-ce',
+    forHostSurface: true,
+    preRegisteredFrameworks: ['vue'],
+    defaultFramework: 'vue',
+  })
+  assert.deepEqual(hostSide.containers, [], '宿主面不建容器')
+  assert.deepEqual(hostSide.sharedStyles, [], '宿主面不做样式隔离')
+  for (const route of hostSide.routes) {
+    assert.equal(route.bundle, '', `页面 <${route.tag}> 不经 bundle 渲染`)
+  }
+
+  // 宿主面真正消费的部分（页面目录）与容器模式逐字段一致
+  const pick = ({ tag, name, path, title, framework, props, params }) => ({
+    tag,
+    name,
+    path,
+    title,
+    framework,
+    props,
+    params,
+  })
+  const containerSide = normalizeManifest(makeManifest(), { assetBase: '/wc/dist-ce' })
+  assert.deepEqual(hostSide.routes.map(pick), containerSide.routes.map(pick))
+})
+
+test('manifest：宿主渲染面不靠 containers 校验页面 framework（用预注册的面兜底）', () => {
+  const m = normalizeManifest(
+    {
+      version: 2,
+      containers: { vue: { bundle: 'containers/vue.js' } },
+      pages: [{ name: 'Dashboard', path: '/dashboard' }], // 无 framework / 无 bundle / tag 无 '-'
+    },
+    { forHostSurface: true, preRegisteredFrameworks: ['vue'], defaultFramework: 'vue' },
+  )
+  assert.equal(m.routes[0].framework, 'vue')
+  assert.equal(m.routes[0].bundle, '')
+  assert.deepEqual(m.containers, [])
+})
+
 test('manifest 工具函数', () => {
   assert.equal(toKebab('OntologyModeling'), 'ontology-modeling')
   assert.deepEqual(extractParams('/users/:id/posts/:postId'), [

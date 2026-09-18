@@ -1,7 +1,16 @@
 {
   "framework": "vue",
   "pages": [
-    { "name": "UserList", "tag": "user-list", "path": "/users", "title": "用户列表", "component": "./UserList.vue" },
+    {
+      "name": "UserList",
+      "tag": "user-list",
+      "path": "/users",
+      "title": "用户列表",
+      "component": "./UserList.vue",
+      "dataSources": [
+        { "match": "/api/users", "fields": ["id", "name", "role"], "maxRows": 20, "primaryKey": "id" }
+      ]
+    },
     { "name": "Plain", "tag": "plain", "path": "/plain", "component": "./Plain.vue" }
   ]
 }

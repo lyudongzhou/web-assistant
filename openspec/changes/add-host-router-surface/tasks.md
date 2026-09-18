@@ -64,6 +64,9 @@
       渲染区（保留对话 / 错误横幅 / 当前页指示）
 - [x] 4.5 单实例约束：host 模式检测多实例并 `console.warn`（apiBus / 网络观测为全局副作用）
 - [x] 4.6 `pnpm --filter @webassistant/chat-client test` + `pnpm typecheck` 通过
+- [x] 4.7 host 模式「无渲染区」的呈现改为 **header 下方紧凑提示条**（不再用一整列空面板 —— 窄容器如宿主 dock
+      里会把对话区挤到 ~120px）：模式徽标 + 文案 + 加载/打断；错误横幅 `.host-error` 跟随其后；
+      当前页指示仍保留（`pageTitle` 在 header 右侧，宿主关掉 header 时才在提示条里补一份）。容器模式 DOM / 样式不变
 
 ## 5. P2：接入面（wc.pages.json 可选 container）
 
@@ -82,6 +85,9 @@
       （`surface="host"` + `createVueHostRuntime`），不动既有 SPA / WC 两条链路
 - [x] 6.2 `packages/demo-app/vite.config.ts`：多页入口（`index.html` + `host.html`）+ `/ws` 代理到 agent-server；
       根 `package.json` 新增 `dev:host` 脚本
+      — **实施注记（本次批次）**：`host.html` / `src/host-main.ts` 已删除 —— 用例 B 的宿主外壳并入
+      `demo-app/src/App.vue` + `src/components/AssistantDock.vue`，WC 用例改为同一 SPA 的 `/assistant` 路由；
+      `dev:host` 保留为 `dev` 的别名。详见根 `README.md` 与 `PROJECT.md` §8.1。
 - [x] 6.3 验收：agent「打开数据源管理」→ 宿主 URL 变化 + `<router-view>` 渲染真实页面 + 面板仍在
 - [x] 6.4 验收：用户点击宿主导航 / 浏览器后退 → 内核收到 `source: 'host'` 导航并同步 agent
 - [x] 6.5 验收：`call_page_method` 命中真实组件 `defineExpose`（`UserList.refresh` / `setKeyword`）

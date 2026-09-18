@@ -68,8 +68,8 @@ function sameQuery(current: Record<string, unknown>, next: Record<string, unknow
 
 /**
  * 造一个宿主直连渲染面。
- * 典型用法（宿主 main.ts / App.vue）：直接用 `createVueHostRuntime({ router, app })`，
- * 或`const hostSurface = createVueHostSurface({ router, app })` 后自己交给 createRuntime。
+ * 典型用法（宿主 main.ts / App.vue）：用 `createVueHostRuntimeBinding({ router, app, services })`（推荐），
+ * 或 `const hostSurface = createVueHostSurface({ router, app })` 后自己交给 createRuntime。
  */
 export function createVueHostSurface(options: VueHostSurfaceOptions): VueHostSurface {
   const { router } = options
@@ -256,6 +256,9 @@ export function createVueHostSurface(options: VueHostSurfaceOptions): VueHostSur
       sync = createRouterSync(router, api, {
         // 宿主路由表是真相：绝不 addRoute
         registerRoutes: false,
+        // 宿主自己的、目录外的路由（登录 / 404 / 宿主演示页）不归内核管：放行且不回流 ——
+        // 否则 runtime 存活期间宿主的这些导航会被内核守卫挡掉（真实 URL 才是最终裁决）
+        passThroughUnknownRoutes: true,
         // 真实 router 上的导航都是「用户在操作宿主界面」（agent 那一跳由 render 之后的 apply 触发，
         // 被 applying 计数器挡住不会回流）→ source 标记 host
         commitSource: 'host',

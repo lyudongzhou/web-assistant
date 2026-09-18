@@ -1,6 +1,7 @@
 # Agent Session 与页面数据回传设计
 
 > 状态：**已实施**（D1 已定案为方案 B；`expose` 执行面与 `emit` 通知面已落地并通过端到端验收，见 openspec `agent-wc-expose-and-emit`）
+> 会话语义**已修订**：由「会话与连接解耦、断线可恢复」改为 **connection-scoped**（一个会话 = 一条 WS 连接，不落任何持久化），见 §3 修订与 openspec `session-per-connection`。
 > 影响包：`protocol` / `wc-runtime-core` / `wc-runtime-vue` / `chat-client` / `agent-server` / `demo-app`
 
 ## 1. 背景与目标
@@ -23,39 +24,57 @@
 
 | # | 决策 | 含义 |
 |---|---|---|
-| P1 | **agent 有 session** | 对话历史 + 当前页面 + 页面数据快照持续保存，与连接解耦 |
+| P1 | **agent 有 session** | 会话上下文（当前页面 + 观察快照 + 对话轨迹）随**连接**存活：连接期间持续有效，断开即销毁（见 §3 修订） |
 | P2 | **通信用 WebSocket** | 不做“SSE + POST 回执”中间形态；HTTP 仅保留降级/健康检查 |
 | P3 | **接受侵入式改老项目** | 在接口层（axios 拦截器 / 自研 http 封装）接一个 EventBus 上报响应数据 |
 | P4 | **不做静默页面** | agent 的每一步操作就在渲染区可见地执行，用户能看到全过程 |
 
 ## 3. Session 模型
 
+> **修订（`session-per-connection`）**：会话改为 **connection-scoped** —— 一个会话 = 一条 WS 连接。
+> 握手时新建、断开即销毁，会话标识与内容都不落任何持久化；多轮对话由连接内的**长驻 agent runtime**
+> 承载（`state.messages` 即对话轨迹），每轮的页面上下文用 SDK 的 `prepareTurn` 投影注入。
+
 ```ts
 interface AgentSession {
-  id: string                        // 前端 sessionStorage 保存（每 tab 一个），断线重连用它恢复
+  id: string                        // 服务端在 session.ready 下发；客户端**不存不传**（断开即失效）
   createdAt: number
-  lastSeenAt: number                // TTL 清理依据（默认 30min）
-  history: ChatTurn[]               // 对话历史；超过 N 轮做摘要压缩
+  lastSeenAt: number                // 僵尸兜底回收依据（默认 30min；正常断开由 destroy() 立即回收）
   currentPage?: {                   // 当前页面（agent 与用户都会改变它）
     tag: string
     params: Record<string, unknown>
     title?: string
   }
-  pageContext: Record<string, PageDataSnapshot[]>  // tag → 该页采集到的数据（按 source 去重覆盖）
+  recentObservations: PageObservation[]  // 实际实现：page.data / page.emit 的扁平事件流（上限 100 条）
   /**
    * 页面 `defineExpose` 能力清单缓存（tag → key 列表，最近一次覆盖）。
    * chat-client 接到 runtime 的 'page-exposed-changed' 后经 ws `page.exposed` 写入；
    * prompt 构建时取 `pageExposedKeys[currentPage.tag]` 拼「当前页可用方法」。
    */
   pageExposedKeys?: Record<string, string[]>
-  pendingCalls: Map<string, PendingCall>           // 进行中的 RPC（不持久化，重连即失效）
-  socketId?: string                 // 当前绑定的连接；断线置空，session 仍存活
+  activeRun?: AgentRun              // 当前 run（可观测 + 同会话串行判据）
 }
+```
 
+> 与早期草案的差异：草案里的 `history: ChatTurn[]` 与 `pageContext: Record<tag, …>` 未按此实现 ——
+> `history` 只写不读（已删除，多轮改由 runtime transcript 承载）；`pageContext` 落地为扁平的
+> `recentObservations`（不按页归并，prompt 里取最近 20 条）。
+
+要点：
+
+- **会话 = 连接**：断线不保留上下文；重连（或刷新）后是**全新会话**，客户端不发任何旧 `sessionId`。
+- **断开即止损**：`handleDisconnect` 依次 abort 在跑的 run → 销毁会话（含清理观察等待）→ 注销 RPC → 释放 agent 实例。
+- **多连接隔离**：会话态容器全部按 `sessionId` 分区（`connections` / `rpc.sockets` / `waiters` / `sessionAgents`），多标签页各自独立、互不影响。
+- **存储抽象**：`SessionStore` 接口保留（内存 `Map` 实现），但**语义是连接期内的存储**，不接任何持久化介质。
+- **观察是「免费上下文」**：用户自己操作页面产生的数据也会进来，agent 下一轮直接可用，无需往返。
+
+`PageDataSnapshot`（`page.data` 的载荷）与 `PendingCall`（RPC 挂起项，不持久化）形状如下 ——
+两者都不是 `AgentSession` 的字段：观察进入 `recentObservations`，挂起项由 `RpcService` 按 session 管理。
+
+```ts
 interface PageDataSnapshot {
-  source: string                    // 命中的 dataSources.match
-  rows?: unknown[]                  // 已按 fields / maxRows / mask 摘要
-  data?: unknown                    // 非列表型响应
+  source: string                    // 显式上报的 source 标识
+  data: unknown                     // 上报的数据快照（调用方决定裁剪/脱敏）
   truncated: boolean
   at: number
 }
@@ -70,13 +89,6 @@ interface PendingCall {
 }
 ```
 
-要点：
-
-- **session 与连接解耦**：断线不丢上下文；重连发 `session.hello { sessionId }` 恢复，`pendingCalls` 直接判超时失败
-- **存储抽象**：`SessionStore` 接口，先内存 `Map`，将来换 Redis 不动上层
-- **多标签页隔离**：sessionId 存 `sessionStorage`（不是 localStorage），天然一 tab 一会话
-- **pageContext 是“免费上下文”**：用户自己操作页面产生的数据也会进来，agent 下一轮直接可用，无需往返
-
 ## 4. WebSocket 协议
 
 统一成 **RPC over WS**：agent 的每个“操作页面”动作 = 一次 `tool.call`，前端执行后回 `tool.result`。
@@ -85,7 +97,7 @@ interface PendingCall {
 ```ts
 // ───────── 客户端 → 服务端 ─────────
 type ClientMessage =
-  | { t: 'session.hello'; sessionId?: string; wcBase: string; manifestVersion: number }
+  | { t: 'session.hello'; wcBase: string; manifestVersion: number }   // 不带 sessionId：会话 = 连接
   | { t: 'chat.send'; text: string }
   | { t: 'chat.cancel' }                                          // 用户打断 agent
   | { t: 'tool.result'; id: string; ok: true; data: unknown }
@@ -99,7 +111,7 @@ type ClientMessage =
 
 // ───────── 服务端 → 客户端 ─────────
 type ServerMessage =
-  | { t: 'session.ready'; sessionId: string; resumed: boolean }
+  | { t: 'session.ready'; sessionId: string; manifestVersion: number; welcome?: WelcomePayload }
   | { t: 'chat.text'; delta: string }                             // 流式文本
   | { t: 'agent.step'; index: number; text: string }              // 可见执行的轨迹
   | { t: 'tool.call'; id: string; name: ToolName; args: unknown; timeoutMs: number }
@@ -123,9 +135,10 @@ interface CallPageMethodToolArgs {
 
 ### 4.1 心跳与重连
 
-- 客户端每 20s 发 `ping`，服务端回 `pong`；服务端 60s 无消息则关连接（session 仍保留）
-- 重连后客户端必须先发 `session.hello { sessionId }`；服务端回 `session.ready { resumed: true }`
-- 重连前未完成的 `tool.call` 一律当超时失败（不补发）
+- 客户端每 30s 发 `ping`（`heartbeatMs` 可配），服务端回 `pong`
+- **重连 = 新会话**：客户端 `session.hello` 不带任何会话标识；服务端每次握手都新建会话并在 `session.ready` 回传新 `sessionId`
+- 重连成功（或主动「新会话」）时客户端清空聊天区并提示「连接已重置，已开始新会话」——避免"旧气泡 + 无记忆"的错位观感
+- 重连前未完成的 `tool.call` 一律当超时/断线失败（不补发）；连接断开时服务端还会 **abort 正在跑的 run** 并销毁该会话
 
 ### 4.2 验收用例的完整时序
 
@@ -210,6 +223,11 @@ chat-client ────────┤ runtime.getPageExposed(tag) → exposed.
 - **函数不跨边界**：expose 的函数引用始终留在浏览器，只上报 key 列表；`args` 走 JSON 序列化。
 - **同一入口**：`chat-client` 执行器与验收台 `window.__waRuntime.getPageExposed()` 走的是同一个 runtime API，验收台可不起 agent 直接验证。
 - **白名单优先**：容器只挂 `manifest.pages[].events` 声明的事件，避免 `*` 全量监听放大事件量。
+- **写入不进执行面**：页面**不要**把会写后端的方法（`save` / `submit` / `delete`）放进 `defineExpose` ——
+  `call_page_method` 是 agent → 页面唯一的写通道，不 expose 就是硬边界（agent 硬调只会拿到
+  `{ ok:false, error:'方法 xxx 未暴露' }`）。agent 只做「打开 / 预填 / 翻页 / 筛选 / 导航」，提交由用户在
+  页面上确认；预填方法统一返回 `{ ui, open, form }` 快照，用户提交后页面自己的 `reportData` 会把结果经
+  **观测面**回给 agent（demo-app 全部页面按此约定，见 `packages/demo-app/README.md` §2.1）。
 - **MVP 边界**：只能调**已渲染**的 tag；跨页调用需页面实例注册表（未做，见附录 C）。
 
 ### 4.5 agent 动作的 ack（in-band，与调用一一对应）
@@ -391,6 +409,11 @@ interface ApiBus {
 `dataSources` 是 agent **规划的依据**：它让 LLM 事先知道“进 user-list 能拿到带 id 的用户数据”，
 才敢做两步计划。没有它，LLM 只能瞎猜。
 
+**声明位置**：`wc.pages.json` 页面条目的 `dataSources` 字段 ——
+analyzer 原样写进 `manifest.pages[].dataSources`（单一来源，不必手改产物）。
+命中裁剪只在**上报带 `url` 且 URL 包含 `match`** 时发生；`source` 会变成 `match` 值。
+
+
 ## 8. props 是 agent 的“控制面”（老项目必须让步的一处）
 
 当前 demo 的 `UserList.vue` **没有** keyword prop，搜索词是内部 state，agent 摸不到：
@@ -410,8 +433,9 @@ watch(() => props.keyword, (v) => (keyword.value = v))
 ```
 
 **结论**：`props` = agent 的控制面，`dataSources` = agent 的观测面，`events` = agent 的通知面，
-`defineExpose` = agent 的**执行面**。页面要接受 agent 驱动，必须把“可被外部决定的输入”显式声明成
-props；把“可被外部直接调用的动作”显式 `defineExpose`（其余三面由 runtime 透明采集，页面零感知）。
+`defineExpose` = agent 的**执行面**（只开放**只读 / 视图操作 / 预填**，见 §4.4）。页面要接受 agent 驱动，
+必须把“可被外部决定的输入”显式声明成 props；把“可被外部直接调用的动作”显式 `defineExpose`
+（其余三面由 runtime 透明采集，页面零感知）。
 
 ## 9. system prompt 的关键规则
 
@@ -475,8 +499,8 @@ agent-server/src/
 | # | 决策点 | 选项 | 建议 |
 |---|---|---|---|
 | **D1** | render 与等数据是一个还是两个 RPC | A 合一 / B 分离 / C 都支持（第 5 节） | 待定 |
-| D2 | sessionId 存储 | `sessionStorage`（一 tab 一会话）/ `localStorage`（跨 tab 共享） | sessionStorage |
-| D3 | history 压缩 | 直接截断最近 N 轮 / LLM 摘要 | 先截断（N=10） |
+| D2 | sessionId 存储 | `sessionStorage`（一 tab 一会话）/ `localStorage`（跨 tab 共享）/**不存储（会话 = 连接）** | **已定案：不存储**（`session-per-connection`） |
+| D3 | history 压缩 | 直接截断最近 N 轮 / LLM 摘要 | **已定案：不用 session.history**；多轮由 runtime transcript 承载，投影按 `MAX_TURN_MESSAGES`（默认 24）截断 |
 | D4 | 是否保留 HTTP `POST /chat` | 保留（单步降级）/ 删除 | 保留 |
 | D5 | `dataSources` 声明方式 | `wc.pages.json` 手写 / analyzer 从代码推断 | 先手写（推断不可靠） |
 | D6 | `chat.cancel` 语义 | 仅停推理 / 并回滚到操作前页面 | 仅停推理（回滚会让用户困惑） |

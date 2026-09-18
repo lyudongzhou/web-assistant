@@ -3,10 +3,18 @@
 import { createApp, type App, type Plugin } from 'vue'
 import WebAssistant from './WebAssistant.vue'
 import WelcomePage from './components/WelcomePage.vue'
+import HostAssistantDock from './components/HostAssistantDock.vue'
+import HostAssistantChat from './components/HostAssistantChat.vue'
+import HostAssistantActivities from './components/HostAssistantActivities.vue'
 import type { WebAssistantProps } from './types.js'
 
 export { WebAssistant }
 export { WelcomePage }
+// 宿主直连（用法 B）开箱即用的三件套：
+//   HostAssistantDock        悬浮窗（接线 + 壳 + 对话 + 状态行 + 动作时间线）—— 第三方首选
+//   HostAssistantChat        对话区（数据进 / 事件出，可塞进宿主自己的布局）
+//   HostAssistantActivities  「本轮动作」折叠条
+export { HostAssistantDock, HostAssistantChat, HostAssistantActivities }
 // 显式上报通道：宿主只装 chat-client（用法 A / 容器模式）时也有明确入口，
 // 不必为了 import apiBus 额外引入 @webassistant/wc-runtime-vue。
 // 与 wc-runtime-vue / wc-runtime-core 转出的是**同一个全局单例**（Symbol.for + globalThis）。
@@ -30,10 +38,22 @@ export {
   type WelcomeRouteLike,
 } from './lib/welcome.js'
 export { resolveInitialTarget, type InitialTarget } from './lib/initialPage.js'
+// 渲染面归一化：`surface` 与 `createRuntime` 只推导一次（headless 宿主可用同一份逻辑，避免自己再判一遍）
+export { resolveSurfaceKind } from './lib/surface.js'
+// 「本轮动作」的格式化/截断纯逻辑：自写 UI 想复用同一套展示口径时用它
+export {
+  ACTIVITY_DETAIL_CLIP,
+  ACTIVITY_VISIBLE_LIMIT,
+  activityKey,
+  formatActivityDetail,
+  formatActivityTime,
+  selectVisibleActivities,
+} from './lib/activities.js'
 
 export type {
   ChatMessage,
   ChatRole,
+  HostAssistantDockProps,
   PageChangeInfo,
   PageEventPayload,
   RuntimeErrorInfo,
@@ -68,7 +88,7 @@ export interface MountWebAssistantOptions {
   plugins?: Plugin[]
 }
 
-/** 命令式挂载：mountWebAssistant('#app', { wcBase, agentBase, services, … }, { plugins }) */
+/** 命令式挂载：mountWebAssistant('#app', { wcBase, wsBase, services, … }, { plugins }) */
 export function mountWebAssistant(
   container: string | Element,
   props: WebAssistantProps = {},

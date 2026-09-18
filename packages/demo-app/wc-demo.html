@@ -162,8 +162,10 @@
 
       // 宿主注入的「外层依赖」：全部是框架无关的纯函数 / 纯数据
       const runtime = createRuntime({
-        manifestUrl: '/manifest.json',
-        assetBase: '/dist-ce',
+        // 清单与产物**与宿主同源**（public/wc/ + dist-ce/），不再依赖 8080 静态服务器。
+        // 这份 manifest 同时被两条渲染面消费（host 面忽略其中的 containers / bundle）。
+        manifestUrl: '/wc/manifest.json',
+        assetBase: '/wc/dist-ce',
         services: {
           request: async (url, init) => {
             log('services.request', url)

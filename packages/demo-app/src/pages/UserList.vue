@@ -1,73 +1,69 @@
 <template>
-  <!-- @description 用户列表页，展示所有用户数据，支持按姓名或邮箱搜索、分页浏览、删除用户和查看详情 -->
-  <div class="p-4">
-    <TestCmp></TestCmp>
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="m-0 text-lg text-gray-900">
-        用户列表<span
-          v-if="greeting"
-          class="ml-3 text-xs font-normal text-gray-500"
-          >{{ greeting }}</span
-        >
-      </h2>
-      <div class="flex gap-2">
+  <!-- @description 用户列表页：展示用户数据，支持按姓名/邮箱搜索、分页、查看详情、删除与新增用户 -->
+  <div>
+    <PageHeader title="用户管理" description="列表页：agent 从这里拿到可继续导航的用户 id">
+      <template #actions>
         <el-input
           v-model="keyword"
-          placeholder="搜索姓名或邮箱"
+          placeholder="搜索姓名 / 邮箱"
           style="width: 220px"
           clearable
           @input="onSearch"
         />
-        <el-button type="primary" @click="openCreate">新增用户</el-button>
+        <el-button size="small" @click="openCreate">新增用户</el-button>
+        <el-button size="small" link type="danger" @click="load('500')">模拟接口失败</el-button>
+      </template>
+    </PageHeader>
+
+    <CapabilityBadge
+      :items="['控制面 props', 'call_page_method', 'emit 通知面', '观测面 report', 'dataSources 白名单']"
+      hint="原始响应直接上报；字段与行数边界声明在 wc.pages.json 的 dataSources"
+    />
+
+    <p v-if="notice" class="notice">{{ notice }}</p>
+
+    <PageState
+      :loading="loading"
+      :error="error"
+      :empty="!rows.length"
+      empty-text="没有匹配的用户"
+      @retry="load()"
+    >
+      <el-table :data="pagedRows" border>
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="name" label="姓名" width="120" />
+        <el-table-column prop="email" label="邮箱" />
+        <el-table-column prop="role" label="角色" width="110" />
+        <el-table-column label="最近登录" width="170">
+          <template #default="{ row }">{{ formatTime(row.lastLoginAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="150">
+          <template #default="{ row }">
+            <el-button size="small" @click="onView(row)">详情</el-button>
+            <el-popconfirm title="确认删除该用户？" @confirm="onDelete(row)">
+              <template #reference>
+                <el-button size="small" type="danger">删除</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="pagination">
+        <el-pagination
+          background
+          layout="prev, pager, next"
+          :total="rows.length"
+          :page-size="pageSize"
+          :current-page="page"
+          @current-change="onPageChange"
+        />
       </div>
-    </div>
+    </PageState>
 
-    <!-- pinia store 演示：容器注入的 store 在页面间共享同一实例 -->
-    <div class="mb-3 rounded bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
-      store.displayName = <b>{{ userStore.displayName }}</b>
-      <el-button
-        size="small"
-        class="ml-2"
-        @click="
-          userStore.setUser({
-            name: '李四',
-            email: 'lisi@example.com',
-            role: '普通用户',
-          })
-        "
-        >改 store</el-button
-      >
-    </div>
-
-    <el-table :data="pagedUsers" border>
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="name" label="姓名" />
-      <el-table-column prop="email" label="邮箱" />
-      <el-table-column prop="role" label="角色" width="100" />
-      <el-table-column label="操作" width="160">
-        <template #default="{ row }">
-          <el-button size="small" @click="onView(row)">详情</el-button>
-          <el-button size="small" type="danger" @click="onDelete(row)"
-            >删除</el-button
-          >
-        </template>
-      </el-table-column>
-    </el-table>
-
-    <div class="mt-4 flex justify-center">
-      <el-pagination
-        background
-        layout="prev, pager, next"
-        :total="filtered.length"
-        :page-size="pageSize"
-        :current-page="page"
-        @current-change="onPageChange"
-      />
-    </div>
-
-    <el-dialog v-model="createVisible" title="新增用户" width="400px">
-      <div class="text-red">123</div>
-      <el-form label-width="60px">
+    <el-dialog v-model="createVisible" title="新增用户" width="420px">
+      <p v-if="createHint" class="prefill">{{ createHint }}</p>
+      <el-form label-width="72px">
         <el-form-item label="姓名">
           <el-input v-model="createForm.name" />
         </el-form-item>
@@ -84,156 +80,230 @@
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitCreate">确定</el-button>
+        <el-button type="primary" :loading="creating" @click="submitCreate">确定</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, watch, type PropType } from "vue";
-import { useRouter } from "vue-router";
-import { tryUseRuntimeServices } from "@webassistant/wc-runtime-vue";
-import { http } from "../utils/request";
-import { reportData } from "../utils/httpClient";
-import { useUserStore } from "../stores/userStore";
-import type { User } from "../data";
-import TestCmp from "../components/TestCmp.vue";
+// 用户管理 —— 演示「一个有界上报的列表页」：
+//
+//   控制面：props.keyword（agent 可直接传，见 manifest 的 props）
+//   观测面：listUsers() 内部把**原始响应**连同 url 上报；runtime 按清单里的 dataSources
+//           （fields: id/name/role、maxRows: 6）摘要后才出网 —— email 不进 agent 视野
+//   执行面：defineExpose 的 refresh / setKeyword / setPage / nextPage / prevPage / openDetail /
+//           openCreateDialog（call_page_method）—— 只读 + 视图操作 + 预填；写方法（submitCreate）不 expose
+//   通知面：defineEmits 的 search / delete / page-change / create
+//
+// 注意 host 模式（用法 B）的已知差异：CE 事件**不会自动捕获**，需要页面用 ctx.emit() 才能到 agent；
+// 本页两种写法都保留（defineEmits + runtime.emit），对照表见 packages/demo-app/README.md。
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { tryUseRuntimeServices } from '@webassistant/wc-runtime-vue'
+import PageHeader from '../components/PageHeader.vue'
+import PageState from '../components/PageState.vue'
+import CapabilityBadge from '../components/CapabilityBadge.vue'
+import { createUser, deleteUser, listUsers } from '../api/users'
+import { reportData } from '../utils/httpClient'
+import { AGENT_PREFILL_HINT, hasAgentPreset, mergeAgentPreset, prefillReceipt } from '../utils/agentPreset'
+import type { AgentPrefillReceipt, PagerSnapshot } from '../utils/agentPreset'
+import type { MockFail, User, UserCreateForm } from '../api/types'
+
 const props = defineProps({
-  // 外部可注入用户数据；不传则用内置 http 获取（便于独立演示）
-  users: { type: Array as PropType<User[]>, default: () => [] },
-  /** 关键词（agent 通过 props 传入过滤条件） */
-  keyword: { type: String, default: "" },
-});
+  /** 搜索关键词（agent 通过 props 传入过滤条件） */
+  keyword: { type: String, default: '' },
+})
 
-const emit = defineEmits(["search", "delete", "page-change", "create"]);
+const emit = defineEmits(['search', 'delete', 'page-change', 'create'])
 
-// 注入的 router（老项目代码原样使用 useRouter，无需改成 emit）
-const router = useRouter();
+const router = useRouter()
+/** runtime 注入的服务（在「没挂助手」的纯 SPA 里为 null → 用 try 版本） */
+const runtime = tryUseRuntimeServices()
 
-// 宿主注入的服务（runtime 容器外跑时为 null，所以用 try 版本，SPA 模式也能跑）
-const runtime = tryUseRuntimeServices();
-const greeting = computed(() => {
-  if (!runtime) return "";
-  const who = (runtime.state.user as { name?: string } | undefined)?.name;
-  return who ? runtime.t("当前登录：") + who : runtime.t("未登录");
-});
+const keyword = ref(props.keyword)
+const rows = ref<User[]>([])
+const loading = ref(false)
+const error = ref('')
+const notice = ref('')
+const page = ref(1)
+const pageSize = 5
 
-// —— pinia store 示例（容器 plugins 注入 createPinia，页面同批构建共享同一实例）——
-const userStore = useUserStore();
+const pagedRows = computed(() =>
+  rows.value.slice((page.value - 1) * pageSize, page.value * pageSize),
+)
 
-const keyword = ref(props.keyword || "");
-const page = ref(1);
-const pageSize = 5;
+/** 总页数（空列表也算一页） */
+const pageCount = computed(() => Math.max(1, Math.ceil(rows.value.length / pageSize)))
 
-// 页面数据：通过 http 从 mock API 拉取。
-// agent 侧要看到这份数据 = 在下面的调用点**显式** reportData；不调就没有任何数据出浏览器，
-// 也没有任何人替页面「自动」上报（runtime 不拦请求）。
-const allUsers = ref<User[]>([]);
+function formatTime(value: string): string {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
 
-async function fetchUsers(name?: string) {
+async function load(fail?: MockFail): Promise<void> {
+  loading.value = true
+  error.value = ''
   try {
-    const url = name
-      ? `/api/users?name=${encodeURIComponent(name)}`
-      : "/api/users";
-    const list = await http<User[]>(url);
-    allUsers.value = list;
-    // 显式上报给 agent：只给 id / name / role（邮箱不给），agent 据此拿到可继续操作的 id
-    reportData(
-      "user-list",
-      list.map((u) => ({ id: u.id, name: u.name, role: u.role })),
-    );
-  } catch {
-    allUsers.value = [];
+    rows.value = await listUsers({ keyword: keyword.value.trim() || undefined, fail })
+    page.value = 1
+  } catch (cause) {
+    const message = (cause as Error).message
+    rows.value = []
+    error.value = message
+    // 失败也上报，且**不带 url**（带 url 会被 dataSources 的字段白名单裁空 —— 错误载荷要原样出网）
+    reportData('user-list-error', { message, url: '/api/users' })
+  } finally {
+    loading.value = false
   }
 }
 
-// props.keyword 变化时同步搜索
+function onSearch(): void {
+  page.value = 1
+  void load()
+  emit('search', keyword.value)
+  runtime?.emit('search', keyword.value)
+}
+
+function onPageChange(next: number): void {
+  page.value = next
+  emit('page-change', next)
+}
+
+function onView(row: User): void {
+  void router.push({ name: 'UserDetail', params: { id: row.id } })
+}
+
+async function onDelete(row: User): Promise<void> {
+  try {
+    await deleteUser(row.id)
+    notice.value = `已删除：${row.name}`
+    await load()
+  } catch (cause) {
+    error.value = (cause as Error).message
+  }
+  emit('delete', row)
+  runtime?.emit('delete', row)
+}
+
+// —— 新增用户 ——
+/** 弹窗默认值：本地按钮与 agent 预填共用（agent 只覆盖它显式传入的字段） */
+const DEFAULT_CREATE_FORM: UserCreateForm = { name: '', email: '', role: '普通用户' }
+const createVisible = ref(false)
+const createHint = ref('')
+const creating = ref(false)
+const createForm = ref<UserCreateForm>({ ...DEFAULT_CREATE_FORM })
+
+/** 本地「新增用户」按钮：清空表单重开并通知（agent 入口是下面的 openCreateDialog，不发通知） */
+function openCreate(): void {
+  openCreateDialog()
+  emit('create')
+}
+
+/** agent 可调用（只预填、不提交）：打开「新增用户」弹窗并用 preset 预填，返回表单快照 —— 只打开、不落库，提交仍由用户点「确定」（submitCreate 未 expose） */
+function openCreateDialog(preset?: Partial<UserCreateForm>): AgentPrefillReceipt<UserCreateForm> {
+  createForm.value = mergeAgentPreset(DEFAULT_CREATE_FORM, preset)
+  createVisible.value = true
+  createHint.value = hasAgentPreset(preset) ? AGENT_PREFILL_HINT : ''
+  return prefillReceipt('新增用户', createForm.value)
+}
+
+/** 弹窗「确定」：新建 → 关弹窗 → 刷新列表（只给人点；agent 调不到） */
+async function submitCreate(): Promise<void> {
+  creating.value = true
+  try {
+    const created = await createUser(createForm.value)
+    notice.value = `已新增：${created.name}（id=${created.id}）`
+    createVisible.value = false
+    await load()
+  } catch (cause) {
+    error.value = (cause as Error).message
+  } finally {
+    creating.value = false
+  }
+}
+
+// —— agent 可调用（defineExpose → analyzer → manifest.exposes → prompt）——
+// 只暴露「只读 / 视图操作 / 预填」三类；删除、提交这类写后端的动作统统不进执行面。
+/** agent 可调用（只读）：重新拉取列表（可带关键词覆盖搜索框），返回本次条数 */
+async function refresh(keywordText?: string): Promise<number> {
+  if (typeof keywordText === 'string') keyword.value = keywordText
+  await load()
+  return rows.value.length
+}
+
+/** agent 可调用（视图操作）：设置筛选关键词并立即查询（等价于在搜索框输入后点搜索） */
+async function setKeyword(kw: string): Promise<number> {
+  return refresh(kw)
+}
+
+/** 分页快照：agent 据此判断「还有没有下一页」 */
+function pagerState(): PagerSnapshot {
+  return { page: page.value, pageCount: pageCount.value, rowCount: rows.value.length }
+}
+
+/** agent 可调用（视图操作）：跳到指定页（等价于点分页器页码；越界会收敛到首/末页），返回分页快照 */
+function setPage(next: number): PagerSnapshot {
+  const raw = Math.trunc(Number(next))
+  const target = Math.min(Math.max(Number.isFinite(raw) ? raw : 1, 1), pageCount.value)
+  onPageChange(target)
+  return pagerState()
+}
+
+/** agent 可调用（视图操作）：下一页（等价于点分页器「下一页」；已在末页时停在原页） */
+function nextPage(): PagerSnapshot {
+  return setPage(page.value + 1)
+}
+
+/** agent 可调用（视图操作）：上一页（等价于点分页器「上一页」；已在首页时停在原页） */
+function prevPage(): PagerSnapshot {
+  return setPage(page.value - 1)
+}
+
+/** agent 可调用（导航）：打开某个用户的详情页（等价于点行内「详情」）；不在列表里就报错，让 agent 自己调整筛选 */
+function openDetail(id: string | number): { target: string; id: string } {
+  const row = rows.value.find((item) => String(item.id) === String(id))
+  if (!row) throw new Error(`当前列表里没有用户 ${id}（可先用 setKeyword / refresh 确认可见范围）`)
+  onView(row)
+  return { target: 'UserDetail', id: String(row.id) }
+}
+
+defineExpose({ refresh, setKeyword, setPage, nextPage, prevPage, openDetail, openCreateDialog })
+
+// agent 传 props.keyword 变化时同步搜索框（控制面入口）
 watch(
   () => props.keyword,
-  (kw) => {
-    if (kw !== undefined) {
-      keyword.value = kw;
-      fetchUsers(kw || undefined);
-    }
+  (next) => {
+    if (next === undefined || next === keyword.value) return
+    keyword.value = next
+    page.value = 1
+    void load()
   },
-);
+)
 
-onMounted(() => {
-  // 外部传了 users 直接用；否则从 API 拉取
-  if (props.users.length) {
-    allUsers.value = props.users as User[];
-  } else {
-    fetchUsers();
-  }
-});
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
-  if (!kw) return allUsers.value;
-  return allUsers.value.filter(
-    (u) =>
-      u.name.toLowerCase().includes(kw) || u.email.toLowerCase().includes(kw),
-  );
-});
-
-const pagedUsers = computed(() =>
-  filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize),
-);
-
-function onSearch() {
-  page.value = 1;
-  fetchUsers(keyword.value.trim() || undefined);
-  emit("search", keyword.value);
-}
-function onView(u: User) {
-  // 换路由：老代码原样，router.push 到详情页（只传 id，详情页按 id 查数据）
-  router.push({ name: "UserDetail", params: { id: u.id } });
-}
-function onDelete(u: User) {
-  emit("delete", u);
-}
-function onPageChange(p: number) {
-  page.value = p;
-  emit("page-change", p);
-}
-
-// —— 新增用户 dialog（el-dialog）——
-const createVisible = ref(false);
-const createForm = reactive({ name: "", email: "", role: "普通用户" });
-
-function openCreate() {
-  createForm.name = "";
-  createForm.email = "";
-  createForm.role = "普通用户";
-  createVisible.value = true;
-}
-function submitCreate() {
-  emit("create", { ...createForm });
-  createVisible.value = false;
-}
-
-// —— agent 可调用的方法（defineExpose → analyzer → manifest.exposes → prompt 注入）——
-/** 重新拉取列表（可带关键词覆盖搜索框），返回本次过滤后的条数 */
-async function refresh(keywordText?: string): Promise<number> {
-  if (typeof keywordText === "string") keyword.value = keywordText;
-  page.value = 1;
-  await fetchUsers(keyword.value.trim() || undefined);
-  return filtered.value.length;
-}
-/** 设置筛选关键词并立即查询（等价于在搜索框输入后点搜索） */
-async function setKeyword(kw: string): Promise<number> {
-  return refresh(kw);
-}
-defineExpose({ refresh, setKeyword });
+onMounted(() => void load())
 </script>
 
 <style scoped>
-h2 {
-  color: #1f2937;
-  border-bottom: 1px solid #e5e7eb;
+.prefill {
+  margin: 0 0 var(--app-space-3);
+  padding: var(--app-space-2) var(--app-space-3);
+  border-radius: var(--app-radius-sm);
+  background: var(--app-primary-weak);
+  color: #4338ca;
+  font-size: 12px;
 }
-.text-red {
-  color: red;
+.notice {
+  margin: 0 0 var(--app-space-3);
+  padding: var(--app-space-2) var(--app-space-3);
+  border-radius: var(--app-radius-sm);
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 12px;
+}
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--app-space-4);
 }
 </style>

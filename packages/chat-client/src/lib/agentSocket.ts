@@ -1,7 +1,10 @@
 // WebSocket-based agent client：双向 RPC（tool.call ↔ tool.result）+ 观察转发。
 // 符合 @webassistant/protocol/websocket 的 ClientMessage / ServerMessage 联合类型。
 //
-// 连接管理：sessionId 持久化（sessionStorage）+ 自动重连退避 + 心跳 ping。
+// 连接管理：**会话 = 连接**（不持久化任何会话标识）+ 自动重连退避 + 心跳 ping。
+//
+// 会话语义：每次握手（session.hello → session.ready）都由服务端新建会话；
+// 客户端不保存、不复用 sessionId —— 刷新页面或断线重连 = 全新会话（由 `onSessionReset` 通知上层重置 UI）。
 import type {
   ClientMessage,
   ServerMessage,
@@ -31,11 +34,21 @@ export interface AgentSocketOptions {
   onMessage?: AgentSocketEventHandler
   /** 连接状态变化回调 */
   onStateChange?: AgentSocketStateChangeHandler
+  /**
+   * 「已开始新会话」回调：**第 2 次及以后的握手**（掉线重连、主动新会话）触发。
+   * 会话 = 连接，所以重连必然是新会话 —— 上层据此清空聊天区并提示用户。
+   */
+  onSessionReset?: (sessionId: string) => void
 }
 
 export interface AgentSocket {
-  /** 建立连接 + 发送 session.hello；返回 sessionId（新建或恢复） */
-  connect(): Promise<{ sessionId: string; resumed: boolean }>
+  /** 建立连接 + 发送 session.hello；返回本次连接新建的 sessionId */
+  connect(): Promise<{ sessionId: string }>
+  /**
+   * 主动开始新会话：断开当前连接（不触发自动重连）后立刻重建 —— 服务端会新建会话。
+   * 用途：UI 的「新会话」入口（等价于刷新页面，但不必关标签页）。
+   */
+  startNewSession(): Promise<{ sessionId: string }>
   /** 发送工具执行结果（render accepted / wait_for_observation 返回） */
   sendToolResult(result: ToolResultMessage): void
   /** 转发页面导航事件 */
@@ -64,7 +77,6 @@ export interface AgentSocket {
 
 // ── 辅助 ──────────────────────────────────────────────────────────────
 
-const SESSION_ID_KEY = 'webassistant.sessionId'
 const HANDSHAKE_TIMEOUT = 10_000
 const MAX_RECONNECT_DELAY = 30_000
 
@@ -78,14 +90,6 @@ function wsUrl(base: string): string {
   return `${protocol}//${location.host}${base}`
 }
 
-function loadSessionId(): string | null {
-  try { return sessionStorage.getItem(SESSION_ID_KEY) } catch { return null }
-}
-
-function saveSessionId(id: string): void {
-  try { sessionStorage.setItem(SESSION_ID_KEY, id) } catch { /* ignore */ }
-}
-
 // ── 工厂 ──────────────────────────────────────────────────────────────
 
 export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
@@ -97,10 +101,14 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     heartbeatMs = 30_000,
     onMessage,
     onStateChange,
+    onSessionReset,
   } = options
 
   let ws: WebSocket | null = null
-  let sessionId: string | null = loadSessionId()
+  /** 本次连接的会话 id（由服务端在 session.ready 下发；**不持久化**，断开即失效） */
+  let sessionId: string | null = null
+  /** 是否已经完成过一次握手：第 2 次起视为「重连 = 新会话」，通知上层重置 UI */
+  let handshaked = false
   let connected = false
   let disposed = false
   let state: AgentSocketState = 'disconnected'
@@ -108,7 +116,7 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null
-  let readyResolve: ((v: { sessionId: string; resumed: boolean }) => void) | null = null
+  let readyResolve: ((v: { sessionId: string }) => void) | null = null
   let readyReject: ((r: Error) => void) | null = null
 
   function setState(next: AgentSocketState): void {
@@ -141,18 +149,21 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     let msg: ServerMessage
     try { msg = JSON.parse(String(data)) as ServerMessage } catch { return }
     if (msg.t === 'session.ready') {
+      const isReset = handshaked
       sessionId = msg.sessionId
-      saveSessionId(sessionId)
+      handshaked = true
       connected = true
       reconnectAttempt = 0
       setState('connected')
       startHeartbeat()
       if (readyResolve) {
-        readyResolve({ sessionId: msg.sessionId, resumed: msg.resumed })
+        readyResolve({ sessionId: msg.sessionId })
         readyResolve = null
         readyReject = null
       }
       if (handshakeTimer) { clearTimeout(handshakeTimer); handshakeTimer = null }
+      // 第 2 次及以后的握手 = 新会话（会话 = 连接）：通知上层清空聊天区
+      if (isReset) onSessionReset?.(msg.sessionId)
     }
     onMessage?.(msg)
   }
@@ -165,10 +176,10 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     ws = socket
 
     socket.onopen = () => {
+      // 会话 = 连接：hello **不带** sessionId（服务端每次新建会话）
       const hello: Extract<ClientMessage, { t: 'session.hello' }> = {
         t: 'session.hello', wcBase, manifestVersion,
       }
-      if (sessionId) hello.sessionId = sessionId
       sendRaw(hello)
     }
     socket.onmessage = (ev) => handleServerMessage(ev.data)
@@ -193,14 +204,35 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     }, HANDSHAKE_TIMEOUT)
   }
 
-  function connect(): Promise<{ sessionId: string; resumed: boolean }> {
-    if (connected && sessionId) return Promise.resolve({ sessionId, resumed: true })
-    return new Promise<{ sessionId: string; resumed: boolean }>((resolve, reject) => {
+  function connect(): Promise<{ sessionId: string }> {
+    if (connected && sessionId) return Promise.resolve({ sessionId })
+    return new Promise<{ sessionId: string }>((resolve, reject) => {
       if (readyReject) readyReject(new Error('连接被重新触发'))
       readyResolve = resolve
       readyReject = reject
       open()
     })
+  }
+
+  /**
+   * 主动开始新会话：断开当前连接（摘掉 onclose，避免触发自动重连与「已断开」噪音）后重建连接。
+   * 服务端对新的 hello 必然新建会话，客户端不发送任何旧会话标识。
+   */
+  function startNewSession(): Promise<{ sessionId: string }> {
+    if (ws) {
+      const socket = ws
+      ws = null
+      socket.onopen = null
+      socket.onmessage = null
+      socket.onerror = null
+      socket.onclose = null
+      socket.close()
+    }
+    connected = false
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+    if (handshakeTimer) { clearTimeout(handshakeTimer); handshakeTimer = null }
+    stopHeartbeat()
+    return connect()
   }
 
   function doDisconnect(): void {
@@ -219,6 +251,7 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
   // ---- 返回 ----
   return {
     connect,
+    startNewSession,
     sendToolResult(result) { sendRaw(result) },
     sendPageNavigated(payload) {
       sendRaw({ t: 'page.navigated', tag: payload.tag, params: payload.params,

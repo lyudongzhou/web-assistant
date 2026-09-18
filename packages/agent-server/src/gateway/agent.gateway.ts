@@ -49,14 +49,28 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(client: ClientSocket): void {
     const state = this.connections.get(client)
     if (state?.session) {
-      this.rpc.unregister(state.session.id, client)
-      this.sessions.unbindSocket(state.session, this.socketId(client))
+      // 会话 = 连接：断开即止损（abort 在跑的 run → 销毁会话 → 注销 RPC → 释放 agent 实例）。
+      this.disposeSession(state.session.id, client)
     }
     this.connections.delete(client)
     this.logger.log(
       `ws disconnected conn#${state?.id ?? '?'}` +
         `${state?.session ? ` session=${state.session.id}` : ''} (online=${this.connections.size})`,
     )
+  }
+
+  /**
+   * 会话回收（连接断开与同连接重复 hello 共用）：
+   * 1. abort 运行中的 run（避免继续往已失效的连接推流）
+   * 2. 销毁会话（含清理该会话的观察等待）
+   * 3. 注销 RPC 通道（挂起的 tool.call 按断线语义失败）
+   * 4. 释放该会话的长驻 agent 实例
+   */
+  private disposeSession(sessionId: string, client: ClientSocket): void {
+    this.agents.abortSession(sessionId)
+    this.sessions.destroy(sessionId)
+    this.rpc.unregister(sessionId, client)
+    this.agents.disposeSession(sessionId)
   }
 
   @SubscribeMessage('session.hello')
@@ -74,17 +88,16 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
         message: `manifest version mismatch: client=${message.manifestVersion}, server=${manifestVersion}`,
       }
     }
-    const { session, resumed } = this.sessions.createOrResume(message.sessionId)
+    // 会话 = 连接：每次握手都新建会话，**不读取也不复用**入参 sessionId（刷新/重连即新会话）。
+    // 同一连接重复 hello 时先按断开语义回收旧会话，避免留下游离会话。
     const state = this.connections.get(client) ?? { id: ++this.connSeq }
-    if (state.session && state.session.id !== session.id) {
-      this.sessions.unbindSocket(state.session, this.socketId(client))
-    }
+    if (state.session) this.disposeSession(state.session.id, client)
+    const session = this.sessions.create()
     state.session = session
     this.connections.set(client, state)
-    this.sessions.bindSocket(session, this.socketId(client))
     this.rpc.register(session.id, client)
     this.logger.log(
-      `session.hello conn#${state.id} session=${session.id} resumed=${resumed} manifestVersion=${manifestVersion}`,
+      `session.hello conn#${state.id} session=${session.id} manifestVersion=${manifestVersion}`,
     )
 
     // 每次建立连接都先说一段欢迎语（介绍能力，按 manifest 页面生成）。
@@ -103,7 +116,6 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return {
       t: 'session.ready' as const,
       sessionId: session.id,
-      resumed,
       manifestVersion,
       ...(welcome ? { welcome } : {}),
     }
@@ -120,8 +132,15 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'chat.send' }>,
   ): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     this.logger.log(`chat.send session=${session.id} text="${truncate(message.text)}"`)
+    // 同一会话串行：长驻 agent runtime 正在跑时拒绝新的一轮（不再允许并发 run）。
+    if (this.agents.isRunning(session.id)) {
+      this.logger.warn(`chat.send session=${session.id} 拒绝：上一轮仍在进行中`)
+      this.rpc.notify(session.id, { t: 'chat.error', message: '上一轮仍在进行中，请等它结束后再发送。' })
+      return
+    }
     void this.agents.run(session.id, message.text).catch((error: unknown) => {
       const reason = errorText(error)
       this.logger.error(`chat.send session=${session.id} agent run failed: ${reason}`)
@@ -131,7 +150,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('chat.cancel')
   handleChatCancel(@ConnectedSocket() client: ClientSocket): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     this.logger.log(`chat.cancel session=${session.id}`)
     this.agents.cancel(session.id)
   }
@@ -141,7 +161,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'tool.result' }>,
   ): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     this.rpc.resolve(session.id, message)
     if (message.ok) this.logger.log(`tool.result session=${session.id} id=${message.id} ok`)
     else this.logger.warn(`tool.result session=${session.id} id=${message.id} failed: ${truncate(message.error)}`)
@@ -152,7 +173,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'page.navigated' }>,
   ): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     this.logger.log(`page.navigated session=${session.id} tag=${message.tag} source=${message.source}`)
     this.sessions.recordNavigation(session, {
       tag: message.tag,
@@ -169,7 +191,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'page.data' }>,
   ): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     const { t, ...payload } = message
     this.logger.debug(
       `page.data session=${session.id} page=${message.page ?? '-'} source=${message.source} data=${truncate(message.data)}`,
@@ -186,7 +209,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'page.emit' }>,
   ): void {
-    const session = this.requireSession(client)
+    const session = this.findSession(client)
+    if (!session) return
     const { t, at, ...rest } = message
     this.logger.log(
       `page.emit session=${session.id} tag=${rest.tag} event=${rest.event} payload=${truncate(rest.payload)}`,
@@ -204,28 +228,29 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /** 当前页 expose 能力清单（chat-client 接到 page-exposed-changed 时转发） */
   @SubscribeMessage('page.exposed')
   handlePageExposed(
-    @ConnectedSocket() _client: ClientSocket,
+    @ConnectedSocket() client: ClientSocket,
     @MessageBody() message: Extract<ClientMessage, { t: 'page.exposed' }>,
   ): void {
     // 暂不进 session.recentObservations（这是元数据，不是事件流）；
     // session 不持有 pageExposedKeys 也能工作 —— manifest.service 在 buildAgentContext 里读的是 manifest，
     // 当前页 tag 由 session.currentPage 给出；运行时「最新 keys」用最近一次 page.exposed 的覆盖。
     // MVP：仅做最小记录（最近一次），不做历史；后续如需 agent 跨页「记住了所有页的 expose」，扩 session 字段。
-    const session = this.requireSession(_client)
+    const session = this.findSession(client)
+    if (!session) return
     this.logger.log(`page.exposed session=${session.id} tag=${message.tag} keys=${truncate(message.keys, 300)}`)
     this.sessions.recordPageExposed(session, message)
   }
 
-  private requireSession(client: ClientSocket): AgentSession {
+  /**
+   * 取当前连接绑定的会话；没有则**返回 null 并记日志**（不抛异常）。
+   * 断开后的迟到消息会落到这里（会话已随连接销毁），抛异常只会产生未捕获噪音。
+   */
+  private findSession(client: ClientSocket): AgentSession | null {
     const session = this.connections.get(client)?.session
     if (!session) {
-      this.logger.warn('收到消息但连接尚未 session.hello，已拒绝')
-      throw new Error('session.hello required')
+      this.logger.warn('收到消息但连接没有有效会话（尚未 session.hello 或会话已随连接销毁），已忽略')
+      return null
     }
     return session
-  }
-
-  private socketId(client: ClientSocket): string {
-    return String(client)
   }
 }

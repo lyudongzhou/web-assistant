@@ -68,6 +68,16 @@ export interface RouterSyncOptions {
    * - host：'host'（那是宿主的真实 router —— 用户在导航）
    */
   commitSource?: NavigationSource
+  /**
+   * 目标路由**不在 core 页面目录里**时怎么办（宿主真实 router 上总会有内核不认识的路由：
+   * 登录页 / 404 / 本项目的演示页）：
+   * - `false`（缺省，container）：交给 core 判定 —— memory router 上不该出现目录外的路由，
+   *   不在目录里就拒绝，保证「内核状态与 router 不分裂」。
+   * - `true`（host）：**放行**，内核不接管 —— 那些路由本来就不归 agent 管，挡掉等于把宿主
+   *   自己的导航一起废掉（历史缺陷：host 模式下 runtime 存活期间点不进登录页 / 演示页）。
+   *   出向的 commit 也跳过（内核保持最后一个目录内页面）。
+   */
+  passThroughUnknownRoutes?: boolean
   /** 每次框架 router 完成一次导航后的回调（host 模式用来在页面挂载后补广播 expose） */
   onNavigated?: (to: RouteLocationNormalized) => void
 }
@@ -103,9 +113,18 @@ export function createRouterSync(
 
   syncRoutes(api.routes)
 
+  /** 该 route name 是否在 core 页面目录里（routes 是实时读的：setRoutes 后立即生效） */
+  const inCatalog = (to: RouteLocationNormalized): boolean => {
+    const name = to.name == null ? null : String(to.name)
+    if (!name) return false
+    return api.routes.some((route) => route.name === name)
+  }
+
   const offBefore = router.beforeEach((to) => {
     // core 推过来的导航：core 已判定过，直接放行
     if (applying > 0) return true
+    // 宿主自己的、目录外的路由（登录 / 404 / 演示页）：不归内核管 —— 真实 router 说了算
+    if (options.passThroughUnknownRoutes && !inCatalog(to)) return true
     const checked = api.canNavigate(toNavigationTarget(to, source))
     return checked.ok ? true : false
   })
@@ -114,6 +133,8 @@ export function createRouterSync(
     options.onNavigated?.(to)
     if (failure) return
     if (applying > 0) return // ★ 防回环：这一跳是 core 推过来的，不要再 commit 回去
+    // 目录外的路由没有对应的 core 页面 → 不回流（否则内核会报 not-found 并广播 error）
+    if (options.passThroughUnknownRoutes && !inCatalog(to)) return
     void api.commit(toNavigationTarget(to, source))
   })
 

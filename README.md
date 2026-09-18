@@ -14,7 +14,7 @@ packages/
 ├── analyzer/         # 读 wc.pages.json + 页面源码（静态 + AI）→ manifest v2
 ├── demo-app/         # 示例「老项目」：Vue3 + element-plus，含 runtime 验收台
 ├── agent-server/     # Agent 后端：Cline SDK + DeepSeek，ReAct 决策 + SSE
-└── chat-client/      # 前端客户端：<WebAssistant> 组件（对话 + 渲染）
+└── chat-client/      # 前端客户端：<WebAssistant>（容器面面板）+ <HostAssistantDock>（宿主直连悬浮窗）
 ```
 
 全仓 TypeScript（基线在 `tsconfig.base.json`）。
@@ -23,22 +23,34 @@ packages/
 
 ```bash
 pnpm install
-pnpm build:libs      # 构建 protocol / core / vue / plugin / analyzer
+pnpm build:libs      # 构建 protocol / core / vue / plugin / analyzer / chat-client
+pnpm analyze         # 生成唯一 manifest（静态 + AI）→ packages/demo-app/public/wc/manifest.json
 pnpm build:ce        # 只编译容器 + 页面为 WC（产物 packages/demo-app/dist-ce/）
-pnpm analyze         # 独立执行静态 + AI 分析，读取宿主 .env/.env.local，生成/更新 manifest v2（带项目级缓存）
 pnpm typecheck       # 全仓类型检查（tsc + vue-tsc）
-pnpm test            # core / vue 单测
+pnpm test            # core / vue / chat-client / analyzer / agent-server 单测
 
-# 方式 A：runtime 验收台（不依赖 chat-client，验证构建产物最快）
-pnpm preview:ce      # → http://localhost:8080/
+# ★ 两条渲染面**共用同一份清单与 manifest**（wc.pages.json → public/wc/manifest.json）：
+#   命令只有 `analyze`（生成页面目录）+ `build:ce`（只有容器面需要的产物），没有第二遍分析。
+#   详见 openspec/changes/unify-page-manifest
 
-# 方式 B：完整对话链路（三个终端）
-pnpm preview:ce      # 8080 静态服务器（manifest + WC 产物）
-pnpm dev:agent       # 3000 agent-server（先在 packages/agent-server/.env 配 DEEPSEEK_API_KEY）
-pnpm dev:client      # 5173 chat-client（proxy /wc→8080、/api→3000）
+# ① 三条演示链路都在 demo-app 的宿主 SPA 里（一个端口 5173）
+pnpm dev             # → http://localhost:5173/#/dashboard（需要 mock 后端：pnpm preview:ce）
+                     #   /dashboard /users /orders /datasources /settings  业务路由 + 悬浮 dock = 用法 B（agent 直接操作宿主 router）
+                     #   /assistant  路由内嵌面板        = 用法 A（容器 / WC，页面在面板内渲染）
+                     #   /lab        能力验收室          = 探针集中地（浮层样式 / CSS-in-JS / 3D 图 / runtime 状态）
+                     #   /login      宿主自己的路由      = 登录守卫 + token（不在 manifest）
+                     #   /wc-demo.html                  = runtime 层验收台（不依赖 chat-client）
+pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json   # 远程（随宿主刷新）
+pnpm dev:agent -- --manifest ../demo-app/public/wc/manifest.json          # 本地文件热重载
+                     # 两种用法读的是**同一个文件** —— 只有失败行为不同：
+                     # 远程拉取失败 = 告警并沿用旧/空 manifest；本地文件不存在 = 启动即崩。
+                     # ⚠️ --manifest 的相对路径按**当前工作目录**解析，而 pnpm 跑脚本的 cwd 是
+                     #    packages/agent-server，所以写 ../demo-app/...（别写 packages/demo-app/...）
+                     # 先在 packages/agent-server/.env 配 DEEPSEEK_API_KEY；
+                     # .env 里的 MANIFEST_URL 会被命令行参数覆盖（CLI 优先）
 
-# 单独验证页面功能（普通 SPA）
-pnpm dev
+# ② 只跑 runtime / WC 产物验收（8080：mock API + 静态预览，不含宿主 SPA）
+pnpm preview:ce      # → http://localhost:8080/ （= wc-demo.html）
 ```
 
 ## 核心机制（一页版）
@@ -52,5 +64,8 @@ pnpm dev
 4. **隔离边界**：每个容器 WC 自己的 shadow root；业务页面用 `shadowRoot:false` 渲染在其中。
    UI 库浮层 teleport 到 body 是已知泄漏点 → `lightDomStyles` 补一份光 DOM 样式。
 5. **props 走 property**：core 把 `params` + 声明 props + 直传 props 归一后下发，对象不能经 attribute。
+6. **一份清单、两条渲染面**：`wc.pages.json` → **一份** `manifest.json`（容器形状）。容器面（用法 A）读其中的
+   `containers` / `pages[].bundle`；宿主直连面（用法 B）只读页面目录，WC 资产由 core 归一化为空
+   （`forHostSurface`）。因此没有第二份清单、也没有第二次分析命令。
 
 详细设计与踩坑记录见 [PROJECT.md](./PROJECT.md)；各包契约见各自 README。

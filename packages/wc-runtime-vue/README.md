@@ -197,16 +197,22 @@ agent rt.navigate({ tag, params, source:'agent' })
 ## 5.1 用法 B：宿主直连（`@webassistant/wc-runtime-vue/host-router`）
 
 ```ts
-import { createVueHostRuntime } from '@webassistant/wc-runtime-vue/host-router'
+import { createVueHostRuntimeBinding } from '@webassistant/wc-runtime-vue/host-router'
 
-const makeRuntime = ({ initial }) => createVueHostRuntime({
+// 推荐：binding 负责 `base → manifestUrl` 与 `initial` 转发 —— 这两处手写最容易错，且错了不报错
+const { createRuntime } = createVueHostRuntimeBinding({
   router,                                  // 宿主真实 vue-router（绝不 addRoute）
   app,                                     // 可选：provide runtime context 给页面
-  manifestUrl: '/wc/manifest.json',        // host 批次 manifest：无 containers / 无 pages[].bundle
-  initial,
+  services,                                // 宿主能力（纯函数 / 纯数据）
 })
+
+// 需要完全自定义时仍可直接用底层函数：
+// createVueHostRuntime({ router, app, manifestUrl: '/wc/manifest.json', initial })
 ```
 
+- **manifest 与容器模式共用同一份**（`/wc/manifest.json`）：host 面只读页面目录，其中的
+  `containers` / `pages[].bundle` 由 core 归一化为空后忽略（`forHostSurface`）——
+  因此不需要第二份清单或第二个 manifest。
 - **agent 能看到什么由宿主决定**：runtime 不拦 fetch/XHR、不自动采集。
   在需要的调用点 `apiBus.report({ source, data })` 显式上报（不调 = 零数据出网）。
 
@@ -229,6 +235,9 @@ apiBus.report({ source: 'user-list', data: users.map((u) => ({ id: u.id, name: u
   - 单实例约束：`apiBus` 是全局单例，多实例会互相抢占（会打告警）
   - 面板必须挂在 `<router-view>` 之外，否则会被 agent 导航卸载
   - 用户手改地址栏 / 浏览器后退无法被内核拒绝（真实 URL 是最终裁决）
+  - **不在页面目录里的宿主路由**（登录页 / 404 / 宿主演示页）：桥的 `passThroughUnknownRoutes`
+    （host 恒开）**放行且不回流内核** —— 否则 runtime 存活期间宿主点不进自己的这些页面；
+    代价是内核保持最后一个目录内页面（这类跳转没有 `page.navigated`）
   - 宿主**自己的**守卫拒绝 agent 导航时：URL 会被挡住，但内核已推进到目标页、agent 仍拿到 `ok:true`
     （vue-router 的 `NavigationFailure` 是 resolve 不是 reject，被桥吞掉）；内核守卫被拒才有 `aborted`
 

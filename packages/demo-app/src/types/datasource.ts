@@ -25,6 +25,13 @@ export interface DatasourceVO {
   owner: DatasourceOwner | null
 }
 
+/** 新增数据源弹窗的可填字段（agent 经 openCreateDialog 预填；与弹窗里的三个输入一一对应） */
+export interface DatasourceCreateForm {
+  name: string
+  host: string
+  port: number
+}
+
 export interface DatasourceRequest {
   name: string
   host: string

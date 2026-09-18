@@ -5,6 +5,10 @@ import { wcVuePlugin, wcBuildPlugin } from '@webassistant/vite-plugin-wc'
 // WC 构建：只负责把 wc.pages.json 中的容器与页面编译成 bundle。
 // manifest 分析是独立操作：执行 `pnpm analyze`。
 export default defineConfig({
+  build: {
+    // ⚠️ 必须关掉 copyPublicDir：产物目录与 public/ 互不相关，没必要把 public（含 manifest）拷进产物目录。
+    copyPublicDir: false,
+  },
   plugins: [
     tailwindcss(),
     wcVuePlugin(),

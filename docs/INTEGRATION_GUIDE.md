@@ -188,16 +188,36 @@ import { apiBus } from '@webassistant/wc-runtime-vue'
 export const httpClient = axios.create({ timeout: 10_000 })  // 不设 baseURL
 
 /** 显式上报一份数据给 agent（可选动作，按需调用） */
-export function reportData(source: string, data: unknown): boolean {
-  return apiBus.report({ source, data })
+export function reportData(source: string, data: unknown, options: { url?: string; method?: string } = {}): boolean {
+  // 带 url → 命中该页 manifest 的 dataSources 时按 fields / maxRows / mask 摘要后才出网
+  return apiBus.report({ source, data, url: options.url, method: options.method })
 }
 ```
 
 ```ts
-// 业务调用点：只报你愿意公开的那份数据（字段自己挑）
+// 业务调用点（两种口径都合法，取舍是「边界写在代码里」还是「写在清单里」）
+// ① 自己挑字段（无声明）
+const user = await http<User>('/api/users/1')
+reportData('user-detail', { id: user.id, name: user.name, role: user.role })
+
+// ② 原始响应直接上报，边界交给清单的 dataSources 声明（见下）
 const list = await http<User[]>('/api/users')
-reportData('user-list', list.map((u) => ({ id: u.id, name: u.name, role: u.role })))
+reportData('user-list', list, { url: '/api/users' })
 ```
+
+**数据源声明写在哪：`wc.pages.json` 的页面条目**（单一来源，analyzer 原样透传进 manifest）：
+
+```jsonc
+{ "name": "UserList", "tag": "user-list", "path": "/users", "component": "src/pages/UserList.vue",
+  "dataSources": [
+    { "match": "/api/users", "fields": ["id","name","role"], "maxRows": 6,
+      "primaryKey": "id", "description": "用户列表（最多 6 行；邮箱不出网）" }
+  ] }
+```
+
+命中后 `source` 变为 `match` 值、并按声明裁剪；未命中或没带 `url` → 原样透传。
+**声明 ≠ 自动上报**：runtime 依然零采集，仍然要在调用点显式 `report()`。
+
 
 **宿主侧也要报「宿主才知道的事实」**（登录态 / 角色 / 纯前端状态）—— 这类数据页面没有，
 不报 agent 就不知道（runtime 不会替你去采集）：
@@ -229,8 +249,10 @@ function reportHostContext(trigger: 'ready' | 'login' | 'logout'): void {
 - **不必**调 `apiBus.attach()`：消费端只有 runtime 内核一处（它是单 sink，业务侧自己 attach 会顶掉内核，
   覆盖时会 `console.warn` 提示）。`report()` 返回 `false` 表示当前没人监听
   （例如同一份页面代码跑在没挂 `<WebAssistant>` 的 SPA 里），可用于开发期自检。
-- **可选加固**：若页面在 manifest 里声明了 `dataSources` 且上报带 `url` 且命中，
+- **可选加固**：若页面在 manifest 里声明了 `dataSources`（清单里写，见上）且上报带 `url` 且命中，
   runtime 会按 `fields` / `maxRows` / `mask` 再裁一层 —— 这是额外保险，不是隐私边界。
+  ⚠️ 有个实际取舍：**错误载荷建议不带 `url`** —— 否则 `{ message }` 会被字段白名单裁成 `{}`，
+  agent 反而看不到「接口挂了」。demo 的 `*-error` 上报就是这么写的。
 - **硬上限**：runtime 侧对上报数据施加 16KB / 深度 4 上限（防 token 爆），超限置 `truncated: true`。
 
 #### 4.5.2 agent 侧看到的效果
@@ -340,6 +362,8 @@ createHostStorePusher(...).plugin                          createStoreMirror().p
 | agent 侧看不到任何接口数据 | **预期行为**：runtime 不自动采集。请在业务调用点显式 `apiBus.report({ source, data })`；若已声明 `dataSources` 且带 `url`，确认 URL 命中了 `match` |
 | el-select 下拉样式错乱 | 容器缺 `lightDomStyles`（浮层 teleport 到 body 的补丁） |
 | 页面里 `useRoute()` 拿不到参数 | 用 `defineProps` 的 `id` prop（runtime 会把 params 归一为 prop） |
+| 面板是「裸 HTML」（没有气泡 / 输入栏样式） | 漏了库的样式入口（预构建库不自动注入 CSS） | `import '@webassistant/chat-client/style.css'` |
+| 看得见对话、看不见输入框 | 内嵌容器没给 `--wa-height`（组件根缺省 `100vh`，被 `overflow: hidden` 裁掉底部） | 挂载点上设 `--wa-height: 100%` |
 
 ---
 
@@ -384,6 +408,10 @@ const { welcomePage, hasPage, currentTag, error } = useWebAssistant({ wcBase: '/
 // 也可以只用原始数据自己合并：welcome / routes / currentTag / sessionReady / manifestSettled
 ```
 
+> 开箱即用：库导出的 `<HostAssistantDock>`（悬浮窗 = 状态行 + 对话 +「本轮动作」时间线，见 9.8）。
+> 可运行示例：`packages/demo-app/src/components/AssistantDock.vue` —— 薄封装，只补 demo 自己的三样私货
+> （`createVueHostRuntimeBinding` 造 runtime、宿主 store 快照桥、`__waHostRuntime` 控制台句柄）。
+
 `welcomePage` 与内置 `WelcomePage.vue` 共用同一份逻辑（`lib/welcome.ts`），不会出现「内置有兜底、自定义没有」的漂移：
 
 | 输出 | 含义 |
@@ -400,12 +428,16 @@ const { welcomePage, hasPage, currentTag, error } = useWebAssistant({ wcBase: '/
 > 目标读者：想让 agent 直接驱动自己项目路由的前端同学。
 > 与上面 1–8 章（**用法 A：容器 / WC**）的区别：不编译 Web Component、不建容器、不做样式隔离 ——
 > 页面还是你自己的页面，在**你自己的 `<router-view>`** 里渲染。
-> 可运行示例：`packages/demo-app/host.html` + `src/host-main.ts`（`pnpm dev:host`）。
+> 可运行示例：`packages/demo-app/src/components/AssistantDock.vue` + `src/App.vue`（`pnpm dev` → `/`；
+> **同一个** SPA 的 `/assistant` 路由是用法 A（容器 / WC）的演示 —— 两条链路一个端口对照着看）。
 
 ### 9.1 一句话
 
 在宿主自己的 vite/vue-router 项目里 **加 2 处代码 + 1 份页面清单**，agent 的 `render` 就变成 `router.push`：
 URL 真的变、页面在原来位置渲染、宿主的守卫/登录态/样式全部生效。
+
+> 这份清单与容器模式（用法 A）**是同一份**，manifest 也是同一份（`pnpm analyze` 只跑一次）——
+> 不需要 `wc.host.json`，也不需要第二次分析命令。
 
 ### 9.2 装什么 / 不装什么
 
@@ -416,14 +448,17 @@ URL 真的变、页面在原来位置渲染、宿主的守卫/登录态/样式�
 | **不装** | `vite-plugin-wc` 的 `wcVuePlugin` / `wcBuildPlugin` | —— |
 | **不建** | `vite.ce.config.ts`、`src/ce/container.ts`、`dist-ce/` | 页面不需要产物 |
 | **不跑** | `pnpm build:ce`、静态服务器（8080 那套） | manifest 同源，不需要 `/wc` 代理 |
+| **不用** | 第二份清单（`wc.host.json`） | 与容器模式**共用同一份** `wc.pages.json` → 同一份 `manifest.json`；host 面只读页面目录，其中的 `containers` / `pages[].bundle` 由 core 归一化为空后忽略（`openspec/changes/unify-page-manifest`） |
+| 宿主自己的其它路由 | 登录页 / 404 / 你自己的演示页**照常工作** | runtime 只接管页面目录内的路由，其余放行（见 9.6 第 5 条） |
 
 ### 9.3 改哪 2 处代码 + 1 份清单
 
-**① `wc.pages.json`（host 批次：不声明 `container`）**
+**① `wc.pages.json`（与容器模式共用同一份；声明 `container` 也无需删）**
 
 ```jsonc
 {
   "framework": "vue",
+  "container": "src/ce/container.ts",           // 容器模式要它；host 模式不读它（留着即可，一份清单两用）
   "rules": ["rules/domain.md"],                 // manifest 级规则（用法 A/B 通用）
   "pages": [
     { "name": "UserList",   "tag": "user-list",   "path": "/users",     "title": "用户列表",
@@ -438,11 +473,14 @@ URL 真的变、页面在原来位置渲染、宿主的守卫/登录态/样式�
 > 缺失时 init **不中断**，只 `console.warn` 一次性列出全部缺失名 —— 真实项目的页面路由常是登录后 /
 > 按权限才注册的；agent 导航到这类页面时返回结构化失败 `{ ok:false, reason:'not-found' }`，
 > 内核当前页与宿主 URL 都不动 —— 不会静默 404）。
+> ⚠️ 若这份清单同时给容器模式用（声明了 `container`），所有 `tag` 都要满足自定义元素规范（**含 `-`**）——
+> 否则 `build:ce` 会报错（analyzer 会提前警告）。
 
-生成 manifest（不含 `containers`，页面也不含 `bundle`）：
+生成 manifest（与容器模式**同一条命令、同一份产物**）：
 
 ```bash
-pnpm analyze:host    # = mkdir -p public/wc && wc-analyze --config wc.pages.json --out public/wc/manifest.json
+pnpm analyze         # = wc-analyze --config wc.pages.json --out public/wc/manifest.json
+                     #   不需要为 host 再跑一遍；产物含 containers / bundle —— host 面会忽略它们
 # 或接进 vite dev 热更新（页面源码 / 规则改动即重写 manifest）：
 # wcManifestPlugin({ configPath: 'wc.pages.json', outPath: 'public/wc/manifest.json' })
 ```
@@ -456,6 +494,35 @@ server: { proxy: { '/ws': { target: 'ws://localhost:3000', ws: true } } }
 **③ 宿主入口（`App.vue` / `main.ts`）：面板 + runtime**
 
 ```vue
+<script setup lang="ts">
+// 面板与 runtime 的接线：建议像 demo 那样拆成一个 <AssistantDock> 组件，在 App.vue 里挂一次
+import { getCurrentInstance } from 'vue'
+import { useRouter } from 'vue-router'
+import { createVueHostRuntimeBinding } from '@webassistant/wc-runtime-vue/host-router'
+import { WebAssistant } from '@webassistant/chat-client'
+
+const router = useRouter()
+// ★ 给宿主 app：runtime 才能把 context provide 进你的 app（页面里 useRuntimeServices() 才可用）
+const app = getCurrentInstance()!.appContext.app
+
+// 宿主能力：**同一份**同时给 runtime 与面板
+// ⚠️ 只放纯函数 / 纯数据（传 pinia/i18n 实例会「首次能读、之后不更新」）
+const services = {
+  getToken: () => authStore.token,
+  // ⚠️ 没有「自动采集」开关：runtime 不拦 fetch/XHR。
+  //    agent 能看到什么，由宿主在业务代码里显式 apiBus.report() 决定（不调 = 零数据出网）
+}
+
+// ★ 一行接线：binding 负责 `base → manifestUrl`（缺省 `{wcBase}/manifest.json`）与 `initial` 转发 ——
+//   这两处手写最容易错，且**错了不报错**（只是拿不到页面目录 / initialPage 静默失效）。
+//   `createRuntime` 一旦提供，面板的渲染面缺省即推导为 'host'（不必再传 surface）。
+const { createRuntime } = createVueHostRuntimeBinding({
+  router,                    // 宿主真实 vue-router（绝不 addRoute）
+  app,
+  services,
+})
+</script>
+
 <template>
   <div class="shell">
     <header>…宿主自己的导航…</header>
@@ -463,42 +530,70 @@ server: { proxy: { '/ws': { target: 'ws://localhost:3000', ws: true } } }
 
     <!-- ★★ 面板必须挂在 <router-view> 之外：挂路由组件里的话，agent 一导航它自己就被卸载 -->
     <div class="wa-dock">
-      <WebAssistant
-        surface="host"
-        ws-base="/ws"
-        :create-runtime="({ initial }) => createVueHostRuntime({
-          router,                                   // 宿主真实 vue-router
-          app,                                      // 可选：provide runtime context 给页面
-          manifestUrl: '/wc/manifest.json',
-          initial,
-          // ⚠️ 没有「自动采集」开关：runtime 不拦 fetch/XHR。
-          //    agent 能看到什么，由宿主在业务代码里显式 apiBus.report() 决定（不调 = 零数据出网）
-        })"
-        @page-change="(info) => console.log(info)"
-      />
+      <WebAssistant ws-base="/ws" :services="services" :create-runtime="createRuntime" />
     </div>
   </div>
 </template>
 ```
 
+> `<WebAssistant :create-runtime>` 是最省事的写法（UI 由库提供）。要**自定义窗口**就用
+> `useWebAssistant({ createRuntime, services })` + 自己的组件 —— host 面不需要渲染区，
+> 连 `mountEl` 都不用挂（`useRuntimeHost` 只对**容器面**要求它）。
+>
+> 想自己控制 manifest 地址（CDN / 多环境）就给 binding 传 `manifestUrl`（显式优先）。
+> 状态行要展示「谁在驱动这个页面 / 当前页可调用方法」时，headless 层已直接给出
+> `navigationSource` 与 `pageExposedKeys`，不必自己 `runtime.on('navigate')` 订阅。
+
 `app` 需要在 `main.ts` 里创建并导出（`export const app = createApp(...)`），或者在 `App.vue` 内创建。
+
+**④ 样式入口 + 内嵌高度（漏了就是「面板样式没引入」）**
+
+```ts
+// main.ts
+import '@webassistant/chat-client/style.css'   // ★ 库是**预构建产物**：SFC 样式被抽到 dist/style.css，
+                                               //   库的 JS 不会自动注入 —— 漏了面板就是一堆裸 HTML
+```
+
+```css
+/* 面板挂载点：必须把 --wa-height 改成容器的 100%
+   （组件根缺省 height: 100vh，塞进 ~620px 的悬浮面板会被 overflow 裁掉底部 → 输入栏看不见） */
+.wa-dock {
+  width: min(880px, calc(100vw - 48px));
+  height: min(620px, calc(100vh - 200px));
+  --wa-height: 100%;
+  --wa-log-width: 300px; /* 执行监视列宽，缺省 320px */
+}
+
+> 这两个变量只服务**内置面板** `<WebAssistant>`：用 `<HostAssistantDock>`（自带尺寸，不受 `--wa-height`
+> 影响；改尺寸用 `--wa-dock-width` / `--wa-dock-height`）或 headless 自写 UI 时都不需要它们。
+```
+
 
 ### 9.4 开发 / 生产工作流
 
 ```bash
-# 开发（不需要静态服务器、不需要 build:ce）
+# 开发（不需要静态服务器；需要 build:ce 页面才会在容器面板里渲染）
 pnpm dev                                  # 宿主自己（含 /ws 代理）
+pnpm analyze                              # 生成唯一 manifest（两条渲染面共用）
 pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
-#   或本地文件模式（mtime 热重载）：--manifest ./public/wc/manifest.json
+#   或本地文件模式（mtime 热重载，读的是**同一个文件**）：
+#   pnpm dev:agent -- --manifest <绝对路径>            ← 最省事
+#   ⚠️ 相对路径按**当前工作目录**解析（`pnpm dev:agent` 的 cwd 是 packages/agent-server）
 # 浏览器打开宿主 → 说话「打开用户列表」→ 地址栏变 /users，页面在你的 router-view 渲染
 ```
+
+> ⚠️ 远程（`--manifest-url`）与本地文件（`--manifest`）读的是**同一份 manifest**，只有**失败行为**不同，
+> 排查「agent 好像不认识任何页面」时先看这里：**远程**拉取失败只 `warn` 并沿用旧/空 manifest ——
+> agent 会静默失明（欢迎语没有能力清单、`render` 无页面可开）；**本地文件**解析/校验失败会让
+> agent-server **启动即崩**。生产用远程（宿主不可用时后端照常起），开发用本地（错了就报出来）。
+> 另外：宿主自己的 dev server 就够用（manifest 同源），**不需要** `/wc` 代理或额外的静态服务器。
 
 | 部署物 | 用法 A（容器/WC） | 用法 B（宿主直连） |
 |---|---|---|
 | 宿主 SPA 产物 | ✔ | ✔（页面代码本来就在里面） |
 | `dist-ce/`（容器 + 页面 bundle） | ✔ | ✘ |
-| `manifest.json` | ✔（另有静态服务器） | ✔（`public/wc/`，同源） |
-| 额外静态服务器 / CORS | ✔（8080 那套） | ✘ |
+| `manifest.json`（**同一份**，`public/wc/`） | ✔（同源；8080 那套只是本地验收用） | ✔（同源） |
+| 额外静态服务器 / CORS | 需要（承载 `/wc/dist-ce/**`） | ✘ |
 | agent-server / `/ws` 反代 | ✔ | ✔（同一条命令） |
 
 ### 9.5 能力对照（老项目视角）
@@ -509,18 +604,37 @@ pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
 | 路由参数 | runtime 归一成 props + memory router | 真实 `useRoute().params`（原生） |
 | agent 直传 props | element property（对象可用） | 旁路：页面读 `useRuntimeServices().pageProps` |
 | `defineExpose` → agent 调用 | 容器读 CE 的 `_instance.exposed` | 读真实实例的 `$.exposed` |
+| agent 可调用的方法 | 只 expose「只读 / 视图操作 / 预填」；写后端的方法**不要** expose（见 9.6 第 7 条） | 同左 |
 | `defineEmits` → agent | 容器自动捕获 | ⚠️ **不自动捕获**，页面需 `useRuntimeServices().emit(...)` |
 | 接口数据 → agent | `apiBus.report()`（调用点显式） | 同左：runtime **零采集**，宿主自己决定报什么 |
 | 样式 / UI 库 | 容器内打包 + shadow 隔离 | 宿主自己的，无隔离问题 |
 | 登录 / 权限守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫 —— ⚠️ 被拒时 URL 挡住了，但 agent 当前仍拿到 `ok:true`（见 9.6 已知缺口） |
 | URL / 刷新 / 分享 | 宿主 URL 不变 | URL 就是当前页 |
 
-### 9.6 四条硬规矩（踩过）
+### 9.6 五条硬规矩（踩过）
 
 1. **面板挂在 `<router-view>` 之外**（布局外壳 / 悬浮层）。原来的「`/aiassistant` 路由内嵌 `<WebAssistant>`」在用法 B 下不成立：agent 一导航，面板随之卸载。
 2. **manifest `name` ↔ 宿主 route `name` 一一对应**（init 告警但不中断；缺名时导航返回 `not-found`）。
-3. **单实例**：`apiBus` 是全局单例，同页挂两个 `<WebAssistant>` 会互相抢占（第二个实例会打告警）。
+3. **单实例**：`apiBus` 是全局单例，同页挂两个 `<WebAssistant>` 会互相抢占（第二个实例会打告警）；两个 runtime 连 `__waRuntime` 调试句柄都会互相顶掉。
 4. **agent 导航缺省 `replace`**，不污染用户历史；URL 会跟着变（这是设计意图：URL 与内核双向镜像，URL 为最终裁决）。
+5. **你自己那些不在页面目录里的路由照常工作**（登录页 / 404 / 宿主演示页）：它们由桥的
+   `passThroughUnknownRoutes`（host 恒开）放行，且**不回流内核** —— 内核保持最后一个目录内页面，
+   不为这类跳转广播 `page.navigated`。想「当前页」永远与 URL 一致，就把这些路由也纳入页面目录。
+6. **样式入口 + `--wa-height`**：宿主必须 `import '@webassistant/chat-client/style.css'`（库是预构建产物，
+   样式不会自动注入 —— 漏了面板就是一堆裸 HTML）；面板挂载点必须给 `--wa-height`（缺省 `100vh`，
+   内嵌到 ~620px 的 dock 里会被裁掉底部，表现为「看得见对话、看不见输入框」，见 9.3 ④）。
+7. **写入不进执行面**：`call_page_method` 是 agent → 页面唯一的写通道，所以「不让 agent 直接下发数据」的
+   正确做法是**不把写后端的方法放进 `defineExpose`**（`save` / `submit` / `delete` 之类），只暴露只读
+   （`refresh`）、视图操作（翻页 / 筛选 / 打开详情 / 导航）、预填（打开配置界面并填好参数、但不提交）。
+   预填统一返回 `{ ui, open, form }` 快照（demo 的公共件见 `packages/demo-app/src/utils/agentPreset.ts`）；
+   用户在页面上点提交后，页面自己的 `apiBus.report()` 会把结果经观测面回给 agent。
+8. **一份清单同时驱动两条渲染面**（`openspec/changes/unify-page-manifest`）：host 面**复用**容器模式的
+   同一份 manifest，其中的 `containers` / `pages[].bundle` 由 core 归一化为空后忽略。两个后果要知道：
+   - 若清单声明了 `container`（容器模式在用），**所有 `tag` 都要含 `-`**（自定义元素规范）；
+     否则 `pnpm build:ce` 报错（`pnpm analyze` 会提前警告）。
+   - 「某页只在一种模式开放」**无法**用清单表达：`/lab` 这类页面在 host 模式下也在目录内（agent 可打开）。
+     也别指望内核守卫能只拦 agent —— `NavigationGuard` 拿不到 `source`，而桥的守卫前移会把
+     宿主自己的点击一并送进 `canNavigate`（拦就是两种导航一起拦）。
 
 **已知缺口（`wc-runtime-vue@0.3.0` 保留，待后续批次修）**：**宿主自己的守卫**（你项目 `router.beforeEach`
 里返回 `false` / 重定向）拒绝 agent 发起的导航时，真实 URL 会被挡住（这是对的），但**内核状态已经推进到
@@ -534,9 +648,70 @@ pnpm dev:agent -- --manifest-url http://localhost:5173/wc/manifest.json
 
 - [ ] agent「打开 XX 页面」→ URL 变化 + 你自己的 `<router-view>` 渲染该页面 + 面板仍在
 - [ ] 用户点自己的导航 / 浏览器后退 → agent 侧收到 `page.navigated`（source=`host`）
-- [ ] `call_page_method` 调用到真实组件的 `defineExpose` 方法（返回值 / 异常都能回给 agent）
+- [ ] `call_page_method` 调用到真实组件的 `defineExpose` 方法（返回值 / 异常都能回给 agent）- [ ] 写后端的方法（`save` 等）**不在** `$.exposed` 里：agent 硬调返回
+      `{ ok:false, error:'方法 xxx 未暴露' }`，只能走「预填 + 用户确认」（见 9.6 第 7 条）
+
 - [ ] 页面接口数据能被 agent 看到（在调用点显式 `apiBus.report()`；不调 = 一条都没有）
 - [ ] manifest `name` 写错 → init 告警一次列出缺失名（不中断）；agent 导航返回
       `{ ok:false, reason:'not-found' }`，URL 与内核当前页都不变
 - [ ] 内核守卫（`runtime.beforeEach`）拒绝某路由 → agent 导航返回 `{ ok:false, reason:'aborted' }`，URL 不变
 - [ ] 宿主**自己的**守卫拒绝某路由 → URL 不变（已知缺口：agent 当前仍拿 `ok:true`，见 9.6）
+- [ ] 点你自己的**非页面路由**（登录页 / 404 / 关于页）→ 能进去且没有被 runtime 挡住（见 9.6 第 5 条）
+- [ ] 首屏就停在某个页面路由上 → agent 第一轮对话就知道「用户当前在哪一页」（adopt，`source: initial`）
+- [ ] 与容器模式共用的清单里所有 `tag` 都含 `-`（否则 `build:ce` 报错；`pnpm analyze` 会警告）
+- [ ] 面板顶部状态行显示「导航来源」（`navigationSource`）与当前页 `expose` 个数（`pageExposedKeys`）——
+      两项由 headless 层直出，不需要自己订阅 runtime
+
+### 9.8 开箱即用的悬浮窗：`<HostAssistantDock>` ★
+
+前面 9.3 给的是「用库的标准面板 `WebAssistant` 自己接线」；如果你要的是 demo 里那种
+**右下角悬浮窗**（头部 + 状态行 + 对话 + 「本轮动作」时间线、可收起、页面在宿主自己的位置渲染），
+直接用库导出的组件 —— **只需一个 `createRuntime`**：
+
+```vue
+<script setup lang="ts">
+import { getCurrentInstance } from 'vue'
+import { useRouter } from 'vue-router'
+import { createVueHostRuntimeBinding } from '@webassistant/wc-runtime-vue/host-router'
+import { HostAssistantDock } from '@webassistant/chat-client'
+
+const router = useRouter()
+const app = getCurrentInstance()!.appContext.app
+const services = { getToken: () => authStore.token }        // 纯函数 / 纯数据
+
+const { createRuntime } = createVueHostRuntimeBinding({ router, app, services })
+</script>
+
+<template>
+  <div class="shell">
+    <header>…宿主自己的导航…</header>
+    <router-view />
+
+    <!-- ★ 挂在 <router-view> 之外（挂在路由组件里会被 agent 导航卸载） -->
+    <HostAssistantDock
+      :create-runtime="createRuntime"
+      :services="services"
+      title="站点助手"
+      badge="AI"
+      placeholder="描述你想做什么…"
+      :suggestions="['打开用户列表，找一下李四', '看看订单']"
+    />
+  </div>
+</template>
+```
+
+它替你做完了：socket 连接与重连、对话状态机、runtime 初始化、页面事件/上报转发、
+状态行（连接 / 导航来源 / runtime / 当前页 expose）、「本轮动作」时间线、收起展开。
+
+| 你想改的 | 怎么做 |
+|---|---|
+| 文案与空态 | props：`title` / `badge` / `placeholder` / `suggestions` / `helloTitle` / `helloHint`（`suggestions` 缺省从页面目录推「打开『XX』」；传 `[]` 关掉） |
+| 尺寸与位置 | CSS 变量 `--wa-dock-width` / `--wa-dock-height` + prop `placement`（`bottom-right` / `bottom-left`） |
+| 配色 | 覆盖 `--wa-*` token（同 9.3 ④；dock 额外用到 `--wa-panel-bg` / `--wa-text-muted` / `--wa-border-strong` 等，都有缺省值） |
+| 接宿主自己的东西 | prop `onRuntimeReady(runtime)`（demo 就在这里接 store 快照桥与调试句柄） |
+| 只要一部分 / 自己排版 | 导出 `HostAssistantChat`（对话区）+ `HostAssistantActivities`（本轮动作）—— 都是「数据进、事件出」；或退回 headless `useWebAssistant()` |
+| 状态行加自己的指标 | `#status` 具名插槽（追加 chip） |
+
+> ⚠️ 两个已知约定：① **收起用的是 `v-show`**，所以 runtime 与 socket 继续存活 —— agent 仍能导航、
+> 会话不丢（别用 `v-if` 包它）；② 单实例（`apiBus` 是全局单例），一页只挂一个 dock。
+

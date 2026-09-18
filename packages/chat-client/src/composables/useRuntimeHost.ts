@@ -12,6 +12,7 @@ import {
 } from '@webassistant/wc-runtime-vue/host'
 import type {
   NavigationResult,
+  NavigationSource,
   NavigationTarget,
   Runtime,
   RuntimeErrorInfo,
@@ -22,12 +23,14 @@ import type {
 } from '@webassistant/wc-runtime-vue/host'
 import type { PageEventPayload, PageChangeInfo, WebAssistantRuntimeContext } from '../types.js'
 import { resolveInitialTarget } from '../lib/initialPage.js'
+import { resolveSurfaceKind } from '../lib/surface.js'
 
 export interface UseRuntimeHostOptions {
   /** manifest 在 {wcBase}/manifest.json，产物在 {wcBase}/dist-ce */
   wcBase: () => string
   /**
-   * 渲染面（用法）：`container`（缺省，WC 用法）/ `host`（宿主直连用法）。
+   * 渲染面（用法）。**缺省自动推导**（见 lib/surface.ts）：
+   * 给了 `createRuntime` ⇒ `host`；否则 `container`。显式传入时以此为准。
    */
   surface?: RuntimeSurfaceKind
   /**
@@ -85,6 +88,11 @@ export interface UseRuntimeHostReturn {
   error: Ref<RuntimeErrorInfo | null>
   routes: Ref<readonly RuntimeRoute[]>
   /**
+   * 最近一次导航的来源（`agent` / `host` / `page` / `initial`）；`null` = 还没发生过导航。
+   * 「谁在驱动这个页面」用它展示即可 —— 宿主不必自己 `runtime.on('navigate')` 再订阅一遍。
+   */
+  navigationSource: Ref<NavigationSource | null>
+  /**
    * 当前页（最新一次广播过 page-exposed-changed 的 tag）的 expose 方法 key 列表。
    * 供 chat-client 透传给 agent-server 作为 call_page_method 的能力清单。
    */
@@ -138,12 +146,16 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
   const status = ref<RuntimeStatus>('idle')
   const error = ref<RuntimeErrorInfo | null>(null)
   const routes = shallowRef<readonly RuntimeRoute[]>([])
+  /** 最近一次导航来源（agent / host / page / initial）——「谁在驱动这个页面」 */
+  const navigationSource = ref<NavigationSource | null>(null)
   const currentPageExposedKeys = shallowRef<string[]>([])
   const currentPageExposedTag = ref<string | null>(null)
   /** WC 活动时间线（最新在前） */
   const activities = shallowRef<WcActivity[]>([])
   const activityLimit = options.activityLimit ?? activityBus.limit
   let stopActivities: (() => void) | null = null
+  /** 是否由本实例挂了 globalThis.__waRuntime 调试句柄（卸载时据此判断该不该删） */
+  let debugHandleAttached = false
 
   /** 宿主侧合成的活动（`kind:'call'` 由容器包裹层上报，这里补事件类，避免重复记账） */
   const record = (input: WcActivityInput): void => {
@@ -167,7 +179,9 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     // runtime 默认会「自动打开 manifest 第一个页面」；chat-client 默认改为不打开（`initial: null`），
     // 让渲染区先展示欢迎页。宿主可用 `initialPage` 恢复/指定首屏页面。
     const initial = resolveInitialTarget(options.initialPage)
-    const surface = options.surface ?? 'container'
+    // 渲染面只推导一次（lib/surface.ts）：`createRuntime` 存在 ⇒ host。
+    // 不要在别处再判一次 `options.surface`，否则「runtime 是 host、面板却渲染空的渲染区」这类静默错配会回来。
+    const surface = resolveSurfaceKind(options.surface, options.createRuntime)
     runtime = options.createRuntime
       ? // host 模式（宿主直连）：runtime 由宿主注入（createVueHostRuntime）—— 面板不负责页面渲染
         options.createRuntime({ base, initial: initial ?? null, surface } satisfies WebAssistantRuntimeContext)
@@ -182,6 +196,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     // 调试模式：把 runtime 交给控制台（与容器同一条 getPageExposed 入口，便于手动触发一次调用）
     if (options.debug) {
       Object.defineProperty(globalThis, '__waRuntime', { configurable: true, get: () => runtime })
+      debugHandleAttached = true
     }
 
     // 「有没有页面」以 runtime 的视图为准：view.tag === null ⇔ 没有渲染子 WC（渲染区空态 → 欢迎页）。
@@ -192,6 +207,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     runtime.on('navigate', ({ location, route, source, canGoBack: back }) => {
       title.value = route.title ?? route.tag
       canGoBack.value = back
+      navigationSource.value = source
       options.onPageChange?.({
         tag: route.tag,
         title: route.title,
@@ -230,9 +246,10 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     })
 
     try {
-      if (!options.createRuntime && !mountEl.value) throw new Error('渲染容器未就绪')
-      // host 模式没有面板内渲染区（页面在宿主自己的位置渲染）→ 不传挂载点
-      await runtime.init(options.createRuntime ? null : mountEl.value)
+      // 容器面必须有面板内挂载点；host 面没有渲染区（页面在宿主的 <router-view> 渲染）→ 不传挂载点。
+      // 判据是**推导后的 surface**（不是 createRuntime 的有无），这样「自定义 runtime + 容器面」的扩展位也成立。
+      if (surface === 'container' && !mountEl.value) throw new Error('渲染容器未就绪')
+      await runtime.init(surface === 'container' ? mountEl.value : null)
       routes.value = runtime.routes
       manifestSettled.value = true
     } catch (cause) {
@@ -250,7 +267,12 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
   onUnmounted(() => {
     stopActivities?.()
     stopActivities = null
-    if (options.debug) Reflect.deleteProperty(globalThis, '__waRuntime')
+    // ⚠️ 只在「当前挂着的还是本实例」时删除：同页可能有第二个 runtime（例如 WC 演示页 + 宿主 dock），
+    //    无条件 delete 会把先挂上的那个（仍在运行）的调试句柄一起抹掉
+    // 注：读 globalThis.__waRuntime 走的是 getter → 拿到的就是「当前挂着的 runtime」
+    if (debugHandleAttached && Reflect.get(globalThis, '__waRuntime') === runtime) {
+      Reflect.deleteProperty(globalThis, '__waRuntime')
+    }
     runtime?.dispose()
     runtime = null
     runtimeRef.value = null
@@ -266,6 +288,7 @@ export function useRuntimeHost(options: UseRuntimeHostOptions): UseRuntimeHostRe
     status,
     error,
     routes,
+    navigationSource,
     currentPageExposedKeys,
     currentPageExposedTag,
     navigate: (target) => Promise.resolve(runtime?.navigate(target)),

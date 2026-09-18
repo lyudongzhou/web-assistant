@@ -217,7 +217,7 @@ style-inject 的 `appendChild(textNode)` 都直接作用在它自己身上，**�
 与 P2（空 `<style>` + `insertRule`）两条路径，`DatasourceAdmin.vue` 挂载时各注入一条；
 构建后可在 DevTools 里看到容器 `shadowRoot` 下出现带 `data-wa-shadow` 的镜像 `<style>`。
 
-**验收探针 2（真实依赖）**：`demo-app` 的 `src/pages/GraphDemo.vue` 挂载 `3d-force-graph`，
+**验收探针 2（真实依赖）**：`demo-app` 的 `src/pages/Lab.vue` 挂载 `3d-force-graph`，
 样式由 `3d-force-graph` + `three-render-objects` + `float-tooltip` 三家在**模块求值期**注入；
 `styleShim.packages` 里对应加了这三个包。验收指标：
 这三个库的 `<style>` **真节点**出现在容器 `shadowRoot` 里（带 `data-wa-shadow` = 归属 scope），

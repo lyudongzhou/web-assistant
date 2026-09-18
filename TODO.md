@@ -95,10 +95,10 @@
 
 ### 3.5 WebSocket Gateway
 
-- [x] 实现 `session.hello` 新建/恢复 Session，并返回 `session.ready`。
+- [x] 实现 `session.hello` 新建 Session（**会话 = 连接**：不再恢复），并返回 `session.ready`。
 - [x] 校验 manifestVersion；未 hello 前拒绝业务消息。
-- [x] 一个 Session 绑定当前连接；断线保留 Session，未完成 Tool Call 失败/超时。
-- [ ] 实现 ping/pong、空闲断开和重连；不补发旧 Tool Call。
+- [x] 一个 Session 绑定当前连接；**断线即销毁 Session**（abort 在跑的 run + 清理观察等待 + 释放 agent 实例），未完成 Tool Call 失败/超时。
+- [x] 实现 ping/pong 与自动重连（重连 = 新会话）；不补发旧 Tool Call。
 - [x] 路由 chat、cancel、tool.result、导航和全部 network observation 消息。
 - [x] 未知消息不崩溃；所有消息隔离在所属 Session。
 
@@ -108,6 +108,8 @@
 - [x] Cline SDK 文本增量转 `chat.text`，执行轨迹转 `agent.step`。
 - [x] Agent 工具调用接入 RpcService，支持等待观察、取消和总 timeout。
 - [x] Prompt 注入 manifest、当前目标、当前页面、最近响应（recentObservations via buildAgentContext）。
+- [x] 连接内多轮：会话内长驻 agent runtime（`state.messages` 含 tool-call/result），每轮用 `prepareTurn` 投影最新页面上下文并按 `MAX_TURN_MESSAGES` 裁剪。
+- [x] 同一会话禁止并发 run（gateway 显式拒绝 + SDK 内建 "already running" 保护）。
 - [ ] Prompt 注入 pending 请求、事件和剩余等待时间（待后续补全）。
 - [ ] Agent 规则：缺少 id 时寻找支持 keyword 的候选列表页；render 后不假设完成；必要时 wait；失败/超时可有限重试、换策略或询问；只使用观察结果确认的 ID。
 
@@ -142,8 +144,9 @@
 目录：`/Users/lvdongzhou/codePersonal/webassistant/packages/chat-client/src/`
 
 - [x] 新增 `agentSocket.ts`、`useAgentSocket.ts`，WebSocket 为唯一客户端传输。
-- [ ] `sessionId` 存 `sessionStorage`；支持首次连接、恢复、自动重连退避、心跳和连接状态。
-- [ ] 支持 chat.text、agent.step、chat.done、chat.error、chat.cancel。
+- [x] **不持久化会话**：`sessionId` 不写 `sessionStorage`/`localStorage`，`session.hello` 不带会话标识；刷新 / 重连 = 新会话（`onSessionReset` → 清空并提示）。
+- [x] 支持首次连接、自动重连退避、心跳和连接状态；`startNewSession()` 提供「新会话」入口。
+- [x] 支持 chat.text、agent.step、chat.done、chat.error、chat.cancel。
 - [ ] 执行 render Tool Call 并立即返回 result；未知工具返回 unsupported tool。
 - [ ] 将导航、网络观察、错误和 timeout 发送给服务端。
 - [ ] UI 展示 Agent 步骤、waiting-observation、错误、超时和取消状态；超时后恢复交互。

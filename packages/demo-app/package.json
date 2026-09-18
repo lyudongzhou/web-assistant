@@ -9,8 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:ce": "vite build --config vite.ce.config.ts",
-    "analyze": "wc-analyze --config wc.pages.json",
-    "analyze:host": "mkdir -p public/wc && wc-analyze --config wc.host.json --out public/wc/manifest.json --no-ai",
+    "build:ce:watch": "vite build --config vite.ce.config.ts --watch",
+    "analyze": "mkdir -p public/wc && wc-analyze --config wc.pages.json --out public/wc/manifest.json",
     "preview:ce": "node serve.mjs",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit"
   },

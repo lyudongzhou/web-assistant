@@ -70,8 +70,10 @@ test('buildAgentContext：注入 call_page_method 传参规则 + 示例 + 当前
   })
   // 传参规则 + few-shot 示例
   assert.match(prompt, /方法签名里出现的参数必须放进 call_page_method 的 args/)
-  assert.match(prompt, /call_page_method\(\{ name: "setKeyword", args: \["钱"\] \}\)/)
-  assert.match(prompt, /call_page_method\(\{ name: "save", args: \[\{ name: "新数据源", host: "127\.0\.0\.1" \}\] \}\)/)
+  assert.match(prompt, /call_page_method\(\{ name: "nextPage" \}\)/)
+  assert.match(prompt, /call_page_method\(\{ name: "openCreateDialog", args: \[\{ name: "订单库", host: "10\.0\.0\.9", port: 3306 \}\] \}\)/)
+  // 写入不进执行面：prompt 必须明确「agent 不代用户提交」
+  assert.match(prompt, /保存、新增、删除等写后端的动作不在可调用方法里/)
   // 当前页可用方法段带调用方式提示
   assert.match(prompt, /\[当前页 <user-list> 可用方法\]/)
   assert.match(prompt, /调用方式：call_page_method\(\{ name: "<方法名>", args: \[按上面签名顺序传实参\] \}\)/)

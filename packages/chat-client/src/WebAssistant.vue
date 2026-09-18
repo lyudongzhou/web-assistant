@@ -8,6 +8,27 @@
       <span v-if="pageTitle" class="current-page">当前页面：{{ pageTitle }}</span>
     </header>
 
+    <!-- host 模式（宿主直连）：**没有渲染区** —— 页面在宿主自己的 <router-view> 渲染。
+         这里用一条**紧凑提示条**而不是一整列空面板：host 模式的主要场景是宿主右下角 dock（窄容器），
+         整列空面板会把对话区挤到 ~120px（demo 里实测）。提示条保留：模式徽标 + 说明 + 加载/打断，
+         错误横幅紧随其后；当前页指示仍由 header 右侧承担（宿主关掉 header 时提示条里补一份，见下）。 -->
+    <template v-if="!renderArea">
+      <div class="host-hint">
+        <span class="host-hint-title">宿主直连模式</span>
+        <span class="host-hint-text">
+          <!-- 当前页指示优先由 header 右侧那份承担（`title` 非空即有 header）；
+               只有宿主关掉 header 时才在提示条里补一份 —— 否则同一句话会在 42px 内出现两遍。 -->
+          <template v-if="!pageTitle">页面在宿主界面中打开 · 等待 agent 打开页面…</template>
+          <template v-else-if="title">页面在宿主界面中打开（不在本面板渲染）</template>
+          <template v-else>页面在宿主界面中打开 · 当前页面：{{ pageTitle }}</template>
+        </span>
+        <span v-if="status === 'loading'" class="host-hint-tip">加载中…</span>
+        <span v-if="loading" class="host-hint-tip">Agent 思考中…</span>
+        <button v-if="loading" class="back-btn" @click="cancel()">✕ 打断</button>
+      </div>
+      <p v-if="error" class="host-error">{{ error.message }}</p>
+    </template>
+
     <div class="main">
       <ChatPanel
         class="panel"
@@ -15,6 +36,7 @@
         :loading="loading"
         :placeholder="placeholder"
         @send="send"
+        @new-session="startNewSession"
       />
 
       <div v-if="renderArea" class="render-area panel">
@@ -55,30 +77,6 @@
         </div>
       </div>
 
-      <!-- host 模式（宿主直连）：**没有渲染区** —— 页面在宿主自己的 <router-view> 渲染，
-           面板只说明状态，避免用户以为「页面会出现在这里」。 -->
-      <div v-else class="render-area panel">
-        <div class="panel-title render-title">
-          <span>宿主直连模式</span>
-          <span v-if="loading" class="loading-tip">Agent 思考中…</span>
-          <button v-if="loading" class="back-btn" @click="cancel()">
-            ✕ 打断
-          </button>
-        </div>
-        <div class="render-body">
-          <div class="empty">
-            <p v-if="error" class="error-tip">{{ error.message }}</p>
-            <div class="empty-fallback">
-              <p>页面在宿主界面中打开</p>
-              <p class="hint">
-                <template v-if="pageTitle">当前页面：{{ pageTitle }}</template>
-                <template v-else>等待 agent 打开页面…</template>
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- 执行监视：WC 活动时间线（方法调用 / 导航 / 事件 / 数据上报 / 网络 / 错误） -->
       <ActivityLog
         v-if="showActivityLog"
@@ -113,7 +111,6 @@ const props = withDefaults(defineProps<WebAssistantProps>(), {
   subtitle: '',
   placeholder: '描述你想打开的页面…',
   showBackButton: true,
-  forwardPageEvents: false,
   showActivityLog: false,
   debug: false,
   // ★ 必须显式给默认值：`welcome` 的类型含 Boolean，Vue 会把「缺省」布尔转换为 `false`
@@ -137,6 +134,7 @@ const {
   welcomePage,
   send,
   cancel,
+  startNewSession,
   mountEl,
   pageTitle,
   hasPage,
@@ -148,6 +146,9 @@ const {
   activities,
   clearActivities,
   back,
+  // 推导后的渲染面（lib/surface.ts）：`renderArea` 用它，**不要**再判 `props.surface` ——
+  // 两处各判一次会漂移出静默错配（runtime 实际是 host，面板却渲染一整列空的「渲染区域」）。
+  surface: effectiveSurface,
 } = useWebAssistant({
   wcBase: props.wcBase,
   wsBase: props.wsBase,
@@ -162,8 +163,8 @@ const {
   onRuntimeReady: (runtime) => props.onRuntimeReady?.(runtime),
 })
 
-/** 是否渲染面板内的「渲染区域」：host 模式（宿主直连）没有它 —— 页面在宿主自己的位置渲染 */
-const renderArea = computed(() => props.surface !== 'host')
+/** 是否渲染面板内的「渲染区域」：宿主直连（host）没有它 —— 页面在宿主自己的位置渲染 */
+const renderArea = computed(() => effectiveSurface !== 'host')
 
 // 欢迎页 = 渲染区空态（runtime 没有渲染子 WC）。状态机在 useWebAssistant 里算好（纯逻辑见 lib/welcome.ts），
 // 因此「内置默认」与「宿主自定义」用的是同一份判断/合并。
@@ -231,6 +232,47 @@ const welcomeSlotProps = computed<WelcomePageSlotProps>(() => ({
   font-size: 13px;
   color: var(--wa-primary, #3b82f6);
   font-weight: 600;
+}
+/* host 模式（无渲染区）的紧凑提示条：一条横条，别再占一整列 ——
+   面板落在窄容器（右下角 dock）时，整列空面板会把对话区挤到没法看。 */
+.host-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--wa-panel-bg, #fff);
+  border-bottom: 1px solid var(--wa-border, #e5e7eb);
+}
+.host-hint-title {
+  padding: 2px 8px;
+  border: 1px solid var(--wa-border, #e5e7eb);
+  border-radius: 999px;
+  background: var(--wa-bg, #f9fafb);
+  color: var(--wa-primary, #3b82f6);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.host-hint-text {
+  min-width: 0;
+  color: var(--wa-text-secondary, #6b7280);
+}
+.host-hint-tip {
+  margin-left: auto;
+  color: var(--wa-text-muted, #9ca3af);
+}
+/* 错误横幅：host 模式没有渲染区可承载 `.error-tip`，这里贴一条同色系的横条（不丢错误可见性） */
+.host-error {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+  background: var(--wa-error-bg, #fef2f2);
+  color: var(--wa-error-text, #b91c1c);
+  border-bottom: 1px solid var(--wa-error-border, #fecaca);
 }
 .main {
   flex: 1;

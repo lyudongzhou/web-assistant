@@ -1,0 +1,99 @@
+/* 演示后台的设计 token（全站一份）。
+ *
+ * 两个作用：
+ *  1. 业务界面的唯一颜色/间距/圆角来源 —— 页面里不再写死颜色与内联样式
+ *  2. 同时是助手面板的主题（chat-client 消费 `--wa-*`）—— 改这里，界面与面板一起变，
+ *     这就是「宿主定制主题」的正式做法（见 packages/chat-client/src/types.ts 的 WebAssistantThemeVars）
+ *
+ * ⚠️ CE（容器 / WC）模式：页面跑在容器 shadow root 里，本文件必须由容器再注入一份
+ *    （src/ce/container.ts 的 shadowStyles），`:root` 会被重写成 `:host`，变量照旧生效。
+ */
+:root {
+  /* 品牌色：Element Plus 的主色也指向它 → 组件库与自研样式同色系 */
+  --app-primary: #4f46e5;
+  --app-primary-weak: #eef2ff;
+  --el-color-primary: #4f46e5;
+  --el-color-primary-light-3: #7c74ec;
+  --el-color-primary-light-5: #a5a0f2;
+  --el-color-primary-light-7: #ceccf7;
+  --el-color-primary-light-8: #dedcf9;
+  --el-color-primary-light-9: #eeedfc;
+  --el-color-primary-dark-2: #3f38b7;
+
+  /* 中性色 */
+  --app-bg: #f6f7fb;
+  --app-surface: #ffffff;
+  --app-border: #e5e7eb;
+  --app-text: #111827;
+  --app-text-secondary: #4b5563;
+  --app-text-muted: #9ca3af;
+
+  /* 语义色 */
+  --app-success: #16a34a;
+  --app-warning: #d97706;
+  --app-danger: #dc2626;
+
+  /* 形状 */
+  --app-radius: 10px;
+  --app-radius-sm: 6px;
+  --app-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.06);
+
+  /* 间距刻度 */
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+  --app-space-5: 24px;
+  --app-space-6: 32px;
+
+  /* 布局 */
+  --app-sidebar-width: 216px;
+  --app-topbar-height: 56px;
+
+  /* 助手面板主题（与业务界面同色系） */
+  --wa-primary: var(--app-primary);
+  --wa-bg: var(--app-bg);
+  --wa-border: var(--app-border);
+  --wa-text: var(--app-text);
+  --wa-text-secondary: var(--app-text-secondary);
+  /* 其余 chat-client 会用到的 token —— 不映射也能跑（组件内都有缺省值），
+     映射了才是「业务界面改一处，助手面板一起变」 */
+  --wa-panel-bg: var(--app-surface);
+  --wa-text-strong: var(--app-text);
+  --wa-text-muted: var(--app-text-muted);
+  --wa-border-strong: #d1d5db;
+  --wa-border-light: var(--app-border);
+  --wa-radius: var(--app-radius);
+  --wa-radius-sm: var(--app-radius-sm);
+  --wa-radius-lg: var(--app-radius);
+  --wa-error-text: var(--app-danger);
+  --wa-error-bg: #fef2f2;
+  --wa-error-border: #fecaca;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+a {
+  color: var(--app-primary);
+  text-decoration: none;
+}

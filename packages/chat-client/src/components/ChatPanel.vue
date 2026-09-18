@@ -1,6 +1,12 @@
 <template>
   <div class="chat-panel">
-    <div class="panel-title">对话窗口</div>
+    <div class="panel-title">
+      <span>对话窗口</span>
+      <!-- 会话 = 连接：新会话 = 断开重连（服务端新建会话），不必刷新页面 -->
+      <button class="new-session" type="button" :disabled="loading" @click="emit('new-session')">
+        新会话
+      </button>
+    </div>
 
     <div ref="messagesEl" class="messages">
       <div v-if="!messages.length" class="welcome">
@@ -46,7 +52,10 @@ const props = withDefaults(
   },
 )
 
-const emit = defineEmits<{ (event: 'send', text: string): void }>()
+const emit = defineEmits<{
+  (event: 'send', text: string): void
+  (event: 'new-session'): void
+}>()
 
 const text = ref('')
 const messagesEl = useTemplateRef<HTMLElement>('messagesEl')
@@ -77,10 +86,33 @@ watch(
   background: var(--wa-panel-bg, #fff);
 }
 .panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 12px 16px;
   font-size: 14px;
   font-weight: 600;
   border-bottom: 1px solid var(--wa-border-light, #f3f4f6);
+}
+.new-session {
+  font: inherit;
+  font-weight: 500;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--wa-border-light, #e5e7eb);
+  border-radius: var(--wa-radius-sm, 6px);
+  background: transparent;
+  color: var(--wa-text-secondary, #6b7280);
+  cursor: pointer;
+}
+.new-session:hover:not(:disabled) {
+  color: var(--wa-primary, #3b82f6);
+  border-color: var(--wa-primary, #3b82f6);
+}
+.new-session:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .messages {
   flex: 1;

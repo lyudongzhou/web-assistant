@@ -4,19 +4,97 @@
   "rules": ["rules/domain.md"],
   "pages": [
     {
-      "name": "DatasourceAdmin",
-      "tag": "datasource-admin",
-      "path": "/datasource",
-      "title": "数据源管理",
-      "component": "src/pages/DatasourceAdmin.vue",
-      "rules": ["rules/datasource-page.md"]
+      "name": "Dashboard",
+      "tag": "app-dashboard",
+      "path": "/dashboard",
+      "title": "工作台",
+      "component": "src/pages/Dashboard.vue",
+      "dataSources": [
+        {
+          "match": "/api/stats/overview",
+          "description": "工作台的指标卡与近 7 日趋势（页面已自行挑字段，未做额外裁剪）",
+          "primaryKey": "key"
+        }
+      ]
     },
     {
-      "name": "GraphDemo",
-      "tag": "graph-demo",
-      "path": "/graph",
-      "title": "3D 图谱",
-      "component": "src/pages/GraphDemo.vue"
+      "name": "UserList",
+      "tag": "user-list",
+      "path": "/users",
+      "title": "用户管理",
+      "component": "src/pages/UserList.vue",
+      "dataSources": [
+        {
+          "match": "/api/users",
+          "fields": ["id", "name", "role"],
+          "maxRows": 6,
+          "primaryKey": "id",
+          "description": "用户列表（最多 6 行；只暴露 id/name/role，邮箱不出网）—— agent 据此取 id 再打开详情页"
+        }
+      ]
+    },
+    {
+      "name": "UserDetail",
+      "tag": "user-detail",
+      "path": "/users/:id",
+      "title": "用户详情",
+      "component": "src/pages/UserDetail.vue",
+      "dataSources": [
+        {
+          "match": "/api/users/",
+          "fields": ["id", "name", "role"],
+          "primaryKey": "id",
+          "description": "单个用户的详情（保存后的结果也会按同样字段回报）"
+        }
+      ]
+    },
+    {
+      "name": "OrderList",
+      "tag": "order-list",
+      "path": "/orders",
+      "title": "订单管理",
+      "component": "src/pages/OrderList.vue",
+      "dataSources": [
+        {
+          "match": "/api/orders",
+          "fields": ["id", "customer", "userId", "amount", "status"],
+          "maxRows": 8,
+          "primaryKey": "id",
+          "description": "订单列表（最多 8 行）—— userId 可与用户页的 id 对上，用于跨页导航"
+        }
+      ]
+    },
+    {
+      "name": "DatasourceAdmin",
+      "tag": "datasource-admin",
+      "path": "/datasources",
+      "title": "数据源管理",
+      "component": "src/pages/DatasourceAdmin.vue",
+      "rules": ["rules/datasource-page.md"],
+      "dataSources": [
+        {
+          "match": "/api/datasources",
+          "fields": ["id", "name", "host", "port", "status", "kind"],
+          "maxRows": 10,
+          "primaryKey": "id",
+          "description": "数据源列表（不含负责人明细）"
+        }
+      ]
+    },
+    {
+      "name": "Settings",
+      "tag": "site-settings",
+      "path": "/settings",
+      "title": "站点设置",
+      "component": "src/pages/Settings.vue"
+    },
+    {
+      "name": "Lab",
+      "tag": "capability-lab",
+      "path": "/lab",
+      "title": "能力验收室",
+      "component": "src/pages/Lab.vue"
     }
   ]
 }
+

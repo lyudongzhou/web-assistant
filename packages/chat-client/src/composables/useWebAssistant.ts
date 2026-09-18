@@ -16,6 +16,7 @@ import type { ServerMessage, WelcomePayload } from '@webassistant/protocol/webso
 import { withActivityOrigin, type WcActivity } from '@webassistant/wc-runtime-vue/host'
 import type {
   NavigationResult,
+  NavigationSource,
   NavigationTarget,
   Runtime,
   RuntimeErrorInfo,
@@ -26,6 +27,7 @@ import type {
 } from '@webassistant/wc-runtime-vue/host'
 import type { ChatMessage, PageChangeInfo, PageEventPayload, WebAssistantRuntimeContext } from '../types.js'
 import type { UseWelcomePageReturn } from './useWelcomePage.js'
+import { resolveSurfaceKind } from '../lib/surface.js'
 
 export interface UseWebAssistantOptions {
   /** manifest 在 {wcBase}/manifest.json，WC 产物在 {wcBase}/dist-ce（默认 '/wc'） */
@@ -35,19 +37,24 @@ export interface UseWebAssistantOptions {
   /**
    * 首屏是否自动打开页面（默认 `false` → 渲染区展示欢迎页）：
    * `true` = 打开 manifest 第一个页面；字符串 = 打开指定 tag 的页面。
-   * host 模式（`surface: 'host'`）忽略它 —— 页面由宿主 URL 决定。
+   *
+   * 与渲染面的关系：`host` 模式下**缺省同样不自动打开**（页面由宿主 URL 决定，靠 `adopt` 纳入内核）；
+   * 但显式的 `true` / tag 在 host 模式**依然生效**（会替宿主 router 打开该页）——
+   * 想让「页面完全由宿主 URL 决定」，就别传它。
    */
   initialPage?: boolean | string
   /**
-   * 渲染面（用法，缺省 `container`）：
-   * - `container`：WC 用法（页面编译成 Web Component，在面板渲染区显示）
-   * - `host`：宿主直连用法（agent 操作宿主真实 router，页面在宿主自己的 `<router-view>` 显示；
-   *   必须同时给 `createRuntime`）
+   * 渲染面（用法）。**缺省自动推导**（见 lib/surface.ts）：
+   * - 给了 `createRuntime` ⇒ `host`（宿主直连：runtime 由宿主注入，页面在宿主自己的 `<router-view>` 渲染）
+   * - 否则 ⇒ `container`（WC 用法：页面编译成 Web Component，在面板渲染区显示）
+   *
+   * 显式传入时以此为准；显式 `host` 必须同时给 `createRuntime`（否则初始化时抛错）。
    */
   surface?: RuntimeSurfaceKind
   /**
-   * runtime 构造注入口（host 模式必填）。
-   * 例：`({ initial }) => createVueHostRuntime({ router, app, manifestUrl: '/wc/manifest.json', initial })`
+   * runtime 构造注入口（宿主直连 / host 模式必填；给了它 `surface` 缺省即为 `host`）。
+   * 例：`createVueHostRuntimeBinding({ router, app, services })` 的 `createRuntime`
+   * （或直接给 `({ base, initial }) => createVueHostRuntime({ router, app, manifestUrl: base + '/manifest.json', initial })`）
    */
   createRuntime?: (context: WebAssistantRuntimeContext) => Runtime
   /** 注入业务 WC 的宿主能力（框架无关：request / t / getToken / theme / state / emit） */
@@ -94,6 +101,8 @@ export interface UseWebAssistantReturn {
   send: (input: string) => void
   cancel: () => void
   reset: () => void
+  /** 开始新会话（会话 = 连接）：清空消息 + 重连（服务端新建会话）。UI 的「新会话」入口用它。 */
+  startNewSession: () => void
   /** 挂在渲染区域的 div 上 */
   mountEl: Ref<HTMLElement | null>
   pageTitle: Ref<string>
@@ -106,6 +115,22 @@ export interface UseWebAssistantReturn {
   status: Ref<RuntimeStatus>
   error: Ref<RuntimeErrorInfo | null>
   routes: Ref<readonly RuntimeRoute[]>
+  /**
+   * **实际生效**的渲染面（推导结果，见 lib/surface.ts）。
+   * 宿主 UI 据此决定要不要渲染面板内的「渲染区域」——不要再自己判 `props.surface`：
+   * 两处各判一次会漂移出静默错配（runtime 是 host、面板却渲染一整列空的渲染区）。
+   */
+  surface: RuntimeSurfaceKind
+  /**
+   * 当前页 `defineExpose` 暴露的方法 key 列表（来自 runtime 的 page-exposed-changed 广播）。
+   * 自写 UI 的宿主直接用它展示「agent 可调用的方法」，不必自己订阅 runtime。
+   */
+  pageExposedKeys: Ref<string[]>
+  /**
+   * 最近一次导航的来源（`agent` / `host` / `page` / `initial`）；`null` = 还没发生过导航。
+   * 状态行展示「谁在驱动这个页面」用它，不必自己订阅 runtime。
+   */
+  navigationSource: Ref<NavigationSource | null>
   /** 宿主侧 runtime 句柄（init 后可用、卸载后回 null）—— 反向推数据/换服务/取页面 expose 用 */
   runtime: ShallowRef<Runtime | null>
   navigate: (target: NavigationTarget) => Promise<NavigationResult | undefined>
@@ -126,13 +151,25 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   const wcBase = options.wcBase ?? '/wc'
   const wsBase = options.wsBase ?? '/ws'
 
+  // 渲染面只推导一次（lib/surface.ts）：给了 `createRuntime` ⇒ host。
+  // 显式 host 却没给 createRuntime 属于**用错**，这里直接报清楚 ——
+  // 否则会一路走到 init 才抛「渲染容器未就绪」（原因是 host 面不渲染面板内挂载点），与真实原因对不上。
+  const surface = resolveSurfaceKind(options.surface, options.createRuntime)
+  if (surface === 'host' && !options.createRuntime) {
+    throw new Error(
+      "[useWebAssistant] surface: 'host'（宿主直连）必须同时提供 createRuntime —— " +
+        'host 模式的 runtime 由宿主用 createVueHostRuntime(...) 造好后注入。',
+    )
+  }
+
   // ---- WebSocket：聊天 + 观察转发 + tool.call 应答，共用一条 WS 连接 ----
   const socket = ref<AgentSocket | null>(null)
   const wsStatus = ref<AgentSocketState>('disconnected')
 
-  // chatHandle 是 ref：useAgentChat 挂上后把 handleServerMessage 写进来，
-  // socket.onMessage 回调用它来分发所有 server 消息（chat.text / tool.call / done / error）
+  // chatHandle / sessionResetHandle 是 ref：useAgentChat 挂上后把处理函数写进来，
+  // socket 的回调统一转发到这里（消息分发 + 「重连 = 新会话」的 UI 重置）。
   const chatHandle = ref<((msg: ServerMessage) => void) | null>(null)
+  const sessionResetHandle = ref<(() => void) | null>(null)
 
   onMounted(() => {
     const agentSocket = createAgentSocket({
@@ -140,6 +177,8 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
       wcBase,
       onMessage: (message) => chatHandle.value?.(message),
       onStateChange: (state) => { wsStatus.value = state },
+      // 会话 = 连接：重连/新连接都是新会话 → 清空聊天区并提示
+      onSessionReset: () => sessionResetHandle.value?.(),
     })
     socket.value = agentSocket
     agentSocket.connect()
@@ -162,6 +201,8 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     status,
     error,
     routes,
+    navigationSource,
+    currentPageExposedKeys,
     activities,
     clearActivities,
     navigate,
@@ -170,7 +211,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     runtime: hostRuntime,
   } = useRuntimeHost({
     wcBase: () => wcBase,
-    surface: options.surface,
+    surface,
     createRuntime: options.createRuntime,
     initialPage: options.initialPage,
     services: options.services,
@@ -212,7 +253,18 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   })
 
   // ---- 对话状态机 ----
-  const { messages, loading, welcome, sessionReady, send, cancel, reset, _handleServerMessage } = useAgentChat({
+  const {
+    messages,
+    loading,
+    welcome,
+    sessionReady,
+    send,
+    cancel,
+    reset,
+    startNewSession,
+    _handleServerMessage,
+    _handleSessionReset,
+  } = useAgentChat({
     socket: () => socket.value,
     onRender: async ({ tag, params, props: directProps }) => {
       const result = await navigate({
@@ -233,6 +285,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   })
 
   chatHandle.value = _handleServerMessage
+  sessionResetHandle.value = _handleSessionReset
 
   // runtime 就绪回调：宿主据此拿到框架无关句柄（setState / setServices / getPageExposed），
   // 「宿主 store → CE store」的推手也挂在这里。
@@ -269,6 +322,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     send,
     cancel,
     reset,
+    startNewSession,
     mountEl,
     pageTitle,
     hasPage,
@@ -278,6 +332,9 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     status,
     error,
     routes,
+    surface,
+    pageExposedKeys: currentPageExposedKeys,
+    navigationSource,
     runtime: hostRuntime,
     activities,
     clearActivities,

@@ -54,13 +54,17 @@ export function normalizeManifest(
   const assetBase = options.assetBase
   const preRegistered = new Set(options.preRegisteredFrameworks ?? [])
 
-  const containers: ContainerDescriptor[] = Object.entries(input.containers ?? {}).map(
-    ([framework, def]) => ({
-      framework,
-      tagName: def?.tagName || containerTagName(framework),
-      bundle: def?.bundle ? joinUrl(assetBase, def.bundle) : null,
-    }),
-  )
+  // 宿主渲染面（forHostSurface）：WC 专属资产一律归一为**空** —— 页面不经 bundle 渲染、不建容器、不做样式隔离。
+  // 这是一条**不变量**（`RuntimeRoute.bundle` 的注释即此意）：因此宿主面可以直接消费容器形状的 manifest
+  //（一份清单 → 一份 manifest 的前提），结果与「host 专属 manifest」逐字段等价；
+  // 也顺手防住「将来有人给宿主面加 bundle / 容器相关逻辑」而拿到残留值（相对路径残留）。
+  const containers: ContainerDescriptor[] = options.forHostSurface
+    ? []
+    : Object.entries(input.containers ?? {}).map(([framework, def]) => ({
+        framework,
+        tagName: def?.tagName || containerTagName(framework),
+        bundle: def?.bundle ? joinUrl(assetBase, def.bundle) : null,
+      }))
   const containerFrameworks = new Set(containers.map((c) => c.framework))
   const knownFrameworks = new Set([...containerFrameworks, ...preRegistered])
   const defaultFramework =
@@ -106,7 +110,7 @@ export function normalizeManifest(
       path,
       title: page.title,
       framework,
-      bundle: page.bundle ? joinUrl(assetBase, page.bundle) : '',
+      bundle: options.forHostSurface ? '' : page.bundle ? joinUrl(assetBase, page.bundle) : '',
       params: page.params?.length ? page.params : extractParams(path),
       props: page.props ?? [],
       events: page.events ?? [],
@@ -119,7 +123,9 @@ export function normalizeManifest(
     version: MANIFEST_VERSION,
     routes,
     containers,
-    sharedStyles: (input.styles?.shared ?? []).map((file) => joinUrl(assetBase, file)),
+    sharedStyles: options.forHostSurface
+      ? []
+      : (input.styles?.shared ?? []).map((file) => joinUrl(assetBase, file)),
   }
 }
 

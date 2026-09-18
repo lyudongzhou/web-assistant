@@ -213,6 +213,34 @@ test('hostSurface：无挂载实例时 expose 为空（广播空 keys，不抛�
   runtime.dispose()
 })
 
+test('hostSurface：宿主导航到页面目录之外的路由（登录页）→ 放行，且不回流内核', async () => {
+  const router = makeHostRouter()
+  await router.push('/users')
+  const runtime = makeHostRuntime(router)
+  const seen = []
+  const errors = []
+  runtime.on('navigate', (event) => seen.push(`${event.route.tag}:${event.source}`))
+  runtime.on('error', (event) => errors.push(event.message))
+  await runtime.init() // adopt → user-list
+  seen.length = 0
+
+  // 宿主自己的路由（不在 manifest 页面目录里）。历史缺陷：内核守卫把它也挡了
+  // → runtime 存活期间宿主点不进登录页 / 自己的演示页（把宿主应用废掉）
+  await router.push('/login')
+  await tick()
+  assert.equal(String(router.currentRoute.value.name), 'Login', '宿主自己的路由不被内核守卫拦住')
+  assert.deepEqual(seen, [], '目录外的路由不回流（内核没有对应页面，不该广播 navigate）')
+  assert.deepEqual(errors, [], '不因目录外路由广播 error（不能每次跳登录页都报错）')
+  assert.equal(runtime.current.route.tag, 'user-list', '内核保持最后一个目录内页面')
+
+  // 回到目录内的路由：回流照常（source: host）
+  await router.push({ name: 'UserDetail', params: { id: '4' } })
+  await tick()
+  assert.deepEqual(seen, ['user-detail:host'])
+  assert.equal(runtime.current.route.tag, 'user-detail')
+  runtime.dispose()
+})
+
 test('hostSurface：当前路由不在页面目录内（登录页）→ 不 adopt，从空态开始', async () => {
   const router = makeHostRouter()
   await router.push('/login')
@@ -232,3 +260,57 @@ test('hostSurface：history 委托宿主（node 无 window → 不可回退）',
   assert.equal(runtime.canGoForward, false)
   runtime.dispose()
 })
+
+test('hostSurface：直接消费**容器形状**的 manifest（一份清单 → 一份 manifest）', async () => {
+  // 与 demo 的产物同形：containers.vue + 每页 bundle。两条渲染面共用同一份 manifest 的前提就在这里 ——
+  // 宿主面必须能初始化，且把 WC 专属资产归一化为空（不加载 bundle、不建容器）。
+  const containerManifest = {
+    version: 2,
+    containers: { vue: { bundle: 'containers/vue.js', tagName: 'runtime-vue' } },
+    styles: { shared: ['shared.css'] },
+    pages: [
+      {
+        name: 'UserList',
+        tag: 'user-list',
+        path: '/users',
+        title: '用户列表',
+        framework: 'vue',
+        bundle: 'pages/userList.js',
+      },
+      {
+        name: 'UserDetail',
+        tag: 'user-detail',
+        path: '/users/:id',
+        title: '用户详情',
+        framework: 'vue',
+        bundle: 'pages/userDetail.js',
+      },
+    ],
+  }
+  const router = makeHostRouter()
+  await router.push('/users')
+  const runtime = createRuntime({
+    manifest: containerManifest,
+    surface: 'host',
+    hostSurface: createVueHostSurface({ router }),
+  })
+  await runtime.init()
+
+  assert.deepEqual(
+    runtime.routes.map((route) => route.tag),
+    ['user-list', 'user-detail'],
+    '页面目录照旧（manifest 里多出来的 WC 字段不影响）',
+  )
+  for (const route of runtime.routes) {
+    assert.equal(route.bundle, '', `页面 <${route.tag}> 在宿主面不经 bundle 渲染`)
+  }
+  assert.equal(runtime.current.route.tag, 'user-list', 'adopt 生效（宿主当前路由在目录内）')
+  assert.equal(runtime.current.location.source, 'initial')
+
+  // agent 导航照样作用在宿主真实 router 上
+  const result = await runtime.navigate({ tag: 'user-detail', params: { id: '3' }, source: 'agent' })
+  assert.equal(result.ok, true)
+  assert.equal(String(router.currentRoute.value.name), 'UserDetail')
+  runtime.dispose()
+})
+
