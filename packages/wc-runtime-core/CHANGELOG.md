@@ -1,5 +1,30 @@
 # @webassistant/wc-runtime-core
 
+## 0.3.2
+
+### Patch Changes
+
+- 一份清单驱动两条渲染面：host 面复用容器形状的 manifest，`/wc-ce` 前缀退场
+
+  - **`wc-runtime-core`**：`normalizeManifest` 在宿主渲染面（`forHostSurface`）下把 WC 专属资产**归一化为空**
+    （`pages[].bundle === ''`、`containers` / `sharedStyles` 为空数组）。此前只「放宽必填」、不清理多余字段，
+    于是喂进容器形状 manifest 时 `bundle` 会留下 `joinUrl(undefined,'pages/x.js')='pages/x.js'` 这样的相对路径残留，
+    与 `RuntimeRoute.bundle` 注释承诺的「宿主面恒为空串」不符。现在容器面与宿主面可以**共用同一份 manifest**。
+  - **`wc-runtime-vue`**：新增 `createVueHostRuntimeBinding({ router, app, services })` → `{ createRuntime }`，
+    把宿主直连 runtime 与 chat-client 的注入口对齐（收敛 `base → manifestUrl` 与 `initial` 转发，
+    这两处手写最容易出错且**错了不报错**）；导出 `resolveHostManifestUrl` / `DEFAULT_MANIFEST_BASE`。
+  - **`analyzer`**：清单声明了 `container` 时，对不含 `-` 的 `tag` 提前警告 —— 同一份清单现在也驱动 WC 构建
+    （`loadWcPages` 要求合法自定义元素名），否则要到 `build:ce` 才在构建期报错、离清单很远。
+  - **demo-app / 文档**：删除 `wc.host.json` 与 `analyze:host`；唯一 manifest 落 `public/wc/manifest.json`；
+    容器批次产物 URL 由 `/wc-ce/dist-ce/**` 收敛为 `/wc/dist-ce/**`（`wcBase` 两条链路都是 `/wc`）；
+    agent-server 默认 manifest 路径同步改到 `public/wc/manifest.json`。
+    规则文档里 `/lab`「agent 不可导航」的说法同步修正（一份清单下所有页面都在目录内）。
+  - 行为等价性由单测锁定：`wc-runtime-core` 新增「容器形状 manifest 走宿主归一化后，页面目录逐字段等价」。
+
+- Updated dependencies
+- Updated dependencies
+  - @webassistant/protocol@0.3.0
+
 ## 0.3.1
 
 > 0.3.0 **本身是可用的**：`registry.npmjs.org` 的**边缘节点**（本机网络路径）取 tarball 返回 404，

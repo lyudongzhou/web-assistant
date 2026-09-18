@@ -1,5 +1,53 @@
 # @webassistant/analyzer
 
+## 0.2.0
+
+### Minor Changes
+
+- feat(demo): demo-app 重写为展示应用 + `wc.pages.json` 可声明 `dataSources`
+
+  - **protocol**：`WcPageEntry` 新增 `dataSources?: ManifestDataSource[]` —— 数据源声明的**单一来源**
+    回到清单文件（此前只能手改产物 manifest，下次 `pnpm analyze` 会被冲掉）。
+  - **analyzer**：把页面条目的 `dataSources` 原样写进 `manifest.pages[].dataSources`（未声明不写字段）；
+    单测覆盖透传与「未声明即省略」。
+  - **demo-app 重写为展示应用**（业务页干净、探针集中进 `/lab`）：
+    - 新增 `src/api/*`（每个资源一个模块，上报调用点收拢在这里）、`src/layout/AppShell.vue`、
+      `src/styles/tokens.css`（兼作 chat-client 主题变量）、`api/query.ts` 等。
+    - 页面重写：`Dashboard` / `UserList` / `UserDetail` / `OrderList` / `DatasourceAdmin` / `Settings` /
+      `Lab`（新）/ `Login`（新，宿主自己的路由，演示登录守卫 + token）；删除 `AppDashboard` /
+      `ProductList` / `GraphDemo`（并入 Lab）/ `TestCmp`（并入 Lab）/ `data.ts`。
+    - `serve.mjs` 重写为小型 mock 后端：用户/订单/指标/数据源 CRUD + 分页筛选 + `?fail=500|401|slow`
+      错误注入 + `/api/settings` 需要 Authorization。
+    - 清单重写：`wc.host.json` / `wc.pages.json` 均声明 `dataSources`（如 `/api/users` 只暴露
+      `id/name/role` 且 `maxRows: 6`），路由与 manifest 的 `name` 严格对齐。
+    - 上报口径保持「调用点显式」：带 `reportData(source, data, { url })` 才走白名单裁剪；
+      失败路径也上报（`*-error`，刻意不带 url 以免被字段白名单裁空）。
+    - 文档：新增 `packages/demo-app/README.md`（页面 ↔ 能力映射 + 验收清单）；同步 PROJECT.md / README.md /
+      `rules/domain.md`。
+
+### Patch Changes
+
+- 一份清单驱动两条渲染面：host 面复用容器形状的 manifest，`/wc-ce` 前缀退场
+
+  - **`wc-runtime-core`**：`normalizeManifest` 在宿主渲染面（`forHostSurface`）下把 WC 专属资产**归一化为空**
+    （`pages[].bundle === ''`、`containers` / `sharedStyles` 为空数组）。此前只「放宽必填」、不清理多余字段，
+    于是喂进容器形状 manifest 时 `bundle` 会留下 `joinUrl(undefined,'pages/x.js')='pages/x.js'` 这样的相对路径残留，
+    与 `RuntimeRoute.bundle` 注释承诺的「宿主面恒为空串」不符。现在容器面与宿主面可以**共用同一份 manifest**。
+  - **`wc-runtime-vue`**：新增 `createVueHostRuntimeBinding({ router, app, services })` → `{ createRuntime }`，
+    把宿主直连 runtime 与 chat-client 的注入口对齐（收敛 `base → manifestUrl` 与 `initial` 转发，
+    这两处手写最容易出错且**错了不报错**）；导出 `resolveHostManifestUrl` / `DEFAULT_MANIFEST_BASE`。
+  - **`analyzer`**：清单声明了 `container` 时，对不含 `-` 的 `tag` 提前警告 —— 同一份清单现在也驱动 WC 构建
+    （`loadWcPages` 要求合法自定义元素名），否则要到 `build:ce` 才在构建期报错、离清单很远。
+  - **demo-app / 文档**：删除 `wc.host.json` 与 `analyze:host`；唯一 manifest 落 `public/wc/manifest.json`；
+    容器批次产物 URL 由 `/wc-ce/dist-ce/**` 收敛为 `/wc/dist-ce/**`（`wcBase` 两条链路都是 `/wc`）；
+    agent-server 默认 manifest 路径同步改到 `public/wc/manifest.json`。
+    规则文档里 `/lab`「agent 不可导航」的说法同步修正（一份清单下所有页面都在目录内）。
+  - 行为等价性由单测锁定：`wc-runtime-core` 新增「容器形状 manifest 走宿主归一化后，页面目录逐字段等价」。
+
+- Updated dependencies
+- Updated dependencies
+  - @webassistant/protocol@0.3.0
+
 ## 0.1.4
 
 ### Patch Changes

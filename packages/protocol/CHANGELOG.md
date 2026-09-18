@@ -1,5 +1,74 @@
 # @webassistant/protocol
 
+## 0.3.0
+
+### Minor Changes
+
+- feat(demo): demo-app 重写为展示应用 + `wc.pages.json` 可声明 `dataSources`
+
+  - **protocol**：`WcPageEntry` 新增 `dataSources?: ManifestDataSource[]` —— 数据源声明的**单一来源**
+    回到清单文件（此前只能手改产物 manifest，下次 `pnpm analyze` 会被冲掉）。
+  - **analyzer**：把页面条目的 `dataSources` 原样写进 `manifest.pages[].dataSources`（未声明不写字段）；
+    单测覆盖透传与「未声明即省略」。
+  - **demo-app 重写为展示应用**（业务页干净、探针集中进 `/lab`）：
+    - 新增 `src/api/*`（每个资源一个模块，上报调用点收拢在这里）、`src/layout/AppShell.vue`、
+      `src/styles/tokens.css`（兼作 chat-client 主题变量）、`api/query.ts` 等。
+    - 页面重写：`Dashboard` / `UserList` / `UserDetail` / `OrderList` / `DatasourceAdmin` / `Settings` /
+      `Lab`（新）/ `Login`（新，宿主自己的路由，演示登录守卫 + token）；删除 `AppDashboard` /
+      `ProductList` / `GraphDemo`（并入 Lab）/ `TestCmp`（并入 Lab）/ `data.ts`。
+    - `serve.mjs` 重写为小型 mock 后端：用户/订单/指标/数据源 CRUD + 分页筛选 + `?fail=500|401|slow`
+      错误注入 + `/api/settings` 需要 Authorization。
+    - 清单重写：`wc.host.json` / `wc.pages.json` 均声明 `dataSources`（如 `/api/users` 只暴露
+      `id/name/role` 且 `maxRows: 6`），路由与 manifest 的 `name` 严格对齐。
+    - 上报口径保持「调用点显式」：带 `reportData(source, data, { url })` 才走白名单裁剪；
+      失败路径也上报（`*-error`，刻意不带 url 以免被字段白名单裁空）。
+    - 文档：新增 `packages/demo-app/README.md`（页面 ↔ 能力映射 + 验收清单）；同步 PROJECT.md / README.md /
+      `rules/domain.md`。
+
+- feat(session)!: 会话改为 connection-scoped（会话 = 连接）—— 断开即新会话，并在连接内实现真正的多轮对话
+
+  **破坏性变更**
+
+  - 协议（`@webassistant/protocol`）：
+    - `SessionHelloMessage` 删除 `sessionId?`（客户端不再上报、不再持久化任何会话标识）；
+    - `SessionReadyMessage` 删除 `resumed`（每次都新建会话，没有"恢复"这个状态）；
+    - `AgentSession` 删除 `history`（只写不读的死数据）与 `socketId`（连接作用域后无需绑定/解绑判定），
+      随之删除 `ChatTurn` / `ChatTurnRole` 类型。
+  - chat-client：
+    - `createAgentSocket` 不再读写 `sessionStorage`（`webassistant.sessionId` 键消失）；
+    - `connect()` 返回值由 `{ sessionId, resumed }` 改为 `{ sessionId }`；
+    - 新增 `AgentSocket.startNewSession()` 与 `AgentSocketOptions.onSessionReset`；`useWebAssistant` / `useAgentChat`
+      透出 `startNewSession()`。
+
+  **原因**
+
+  原设计是「会话与连接解耦」（`sessionId` 存 `sessionStorage`、断线重连恢复），但实际运行中它带来的是负收益：
+
+  1. **前后端状态必然发岔** —— 刷新后客户端渲染宿主回到欢迎页（不发 `page.navigated`），服务端却仍保留刷新前的
+     `currentPage` / `recentObservations` / `pageExposedKeys`，下一轮 prompt 会告诉模型一个并不存在的"当前页"。
+  2. **刷新后旧 run 继续串流，还能并发起第二个 run** —— `activeAgents` 按 sessionId 保活、`rpc.register` 覆盖式注册，
+     于是旧 run 的输出继续推到刷新后的页面；此时再发消息会跑起两个并发 Agent，且旧实例的引用被覆盖后**再也 cancel 不掉**。
+  3. **"多轮对话"其实不存在** —— `session.history` 只写不读，`new Agent()` 也没带 `initialMessages`，
+     每轮都是单轮无记忆对话。也就是说"保持 session"保住的只是陈旧页面上下文，没保住对话本身。
+
+  **改为**
+
+  - **会话 = 连接**：握手即新建、断开即销毁；客户端零持久化（刷新 / 重连 = 全新会话，聊天区清空并提示）；
+    多条 WS 连接并存时各自独立会话。
+  - **断开即止损**：`handleDisconnect` 依次 abort 在跑的 run → 销毁会话（含清理观察等待）→ 注销 RPC → 释放 agent 实例。
+  - **连接内真多轮**：`AgentService` 为每个会话维护一个长驻 `AgentRuntime`（`state.messages` 即对话轨迹，
+    含 tool-call / tool-result）；每轮的动态页面上下文（manifest + 规则 + 当前页可用方法 + 最近观察）
+    由 SDK 的 `prepareTurn` 投影注入（只影响当次请求、不回写轨迹），并按 `MAX_TURN_MESSAGES`（默认 24）做有界裁剪。
+  - **同会话串行**：运行中再次 `chat.send` 会被显式拒绝并回 `chat.error`（SDK 侧也有 "already running" 保护）。
+  - `SESSION_TTL_MS` 保留为**僵尸兜底回收**（异常路径未触发 disconnect 时），不再承担"保活"语义。
+  - 客户端新增「新会话」入口（内置 `ChatPanel` 标题栏按钮），等价于刷新页面但不必关标签页。
+
+  **迁移**
+
+  - 自定义宿主若曾读取 `session.ready.resumed` 或自行持久化 `sessionId`，直接删除相关逻辑（协议不再提供）；
+    旧服务端 + 新客户端、或新服务端 + 旧客户端都能工作（服务端忽略入参 `sessionId`，客户端不读 `resumed`）。
+  - 需要"记住上次会话"的场景不再支持：刷新即新会话是本版本的**有意行为**。
+
 ## 0.2.0
 
 ### Minor Changes

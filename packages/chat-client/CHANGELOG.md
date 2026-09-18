@@ -1,5 +1,137 @@
 # @webassistant/chat-client
 
+## 0.6.0
+
+### Minor Changes
+
+- 宿主直连面（用法 B）**开箱即用**：导出悬浮窗 / 对话区 / 动作时间线三个组件
+
+  此前这套面板只活在 demo 里（`AssistantChat.vue` + `AssistantDock.vue`），第三方要用只能抄。现在：
+
+  - **`<HostAssistantDock>`** —— 右下角悬浮窗：头部（连接态 / 返回 / 新会话 / 收起）+ 状态行
+    （连接 / 导航来源 / runtime / 当前页 expose）+ 对话 + 「本轮动作」时间线，全部接好线。
+    宿主**只需一个 `createRuntime`**：
+    ```vue
+    const { createRuntime } = createVueHostRuntimeBinding({ router, app,
+    services })
+    <HostAssistantDock :create-runtime="createRuntime" :services="services" />
+    ```
+    可定制：`title` / `badge` / `placeholder` / `suggestions`（缺省从页面目录推「打开『XX』」）/ `helloTitle` /
+    `helloHint` / `showStatusLine` / `showActivities` / `activitiesDefaultOpen` / `activityLimit` / `placement` /
+    `debug` / `onRuntimeReady`（接宿主自己的 store 快照桥与调试句柄）+ `#status` 插槽；
+    尺寸走 `--wa-dock-width` / `--wa-dock-height`。
+  - **`<HostAssistantChat>`** —— 对话区（多条 textarea + Enter/Shift+Enter、流式「打断」、可点建议、`#empty` 插槽），
+    可单独放进宿主自己的布局。
+  - **`<HostAssistantActivities>`** —— 「本轮动作」折叠条（缺省收起；点开看 args/result/error）。
+  - **不依赖 element-plus**：三者全用原生 `button` / `textarea` + `--wa-*` token（与既有组件一致）。
+  - **新增纯逻辑导出**（自写 UI 也能复用同一展示口径）：`formatActivityDetail` / `formatActivityTime` /
+    `selectVisibleActivities` / `activityKey` + `ACTIVITY_DETAIL_CLIP` / `ACTIVITY_VISIBLE_LIMIT`。
+
+  两处需要注意的行为：
+
+  - **收起用 `v-show`**（runtime / socket 继续存活，agent 仍能导航）—— 别用 `v-if` 包它。
+  - dock 头部的按钮由「清空对话」改为「**新会话**」：调 `startNewSession()`（清消息 + 断开重连 = 服务端新建会话），
+    与容器面 `ChatPanel` 的「新会话」语义一致（原先的 `reset` 只清本地消息、服务端上下文仍在）。
+
+  demo 侧同步收敛：`AssistantDock.vue` 退化为薄封装（binding + store 快照桥 + 调试句柄），
+  `AssistantChat.vue` 删除；`tokens.css` 补齐 `--wa-panel-bg` / `--wa-text-muted` / `--wa-border-*` /
+  `--wa-radius*` / `--wa-error-*` 映射。
+
+- feat(session)!: 会话改为 connection-scoped（会话 = 连接）—— 断开即新会话，并在连接内实现真正的多轮对话
+
+  **破坏性变更**
+
+  - 协议（`@webassistant/protocol`）：
+    - `SessionHelloMessage` 删除 `sessionId?`（客户端不再上报、不再持久化任何会话标识）；
+    - `SessionReadyMessage` 删除 `resumed`（每次都新建会话，没有"恢复"这个状态）；
+    - `AgentSession` 删除 `history`（只写不读的死数据）与 `socketId`（连接作用域后无需绑定/解绑判定），
+      随之删除 `ChatTurn` / `ChatTurnRole` 类型。
+  - chat-client：
+    - `createAgentSocket` 不再读写 `sessionStorage`（`webassistant.sessionId` 键消失）；
+    - `connect()` 返回值由 `{ sessionId, resumed }` 改为 `{ sessionId }`；
+    - 新增 `AgentSocket.startNewSession()` 与 `AgentSocketOptions.onSessionReset`；`useWebAssistant` / `useAgentChat`
+      透出 `startNewSession()`。
+
+  **原因**
+
+  原设计是「会话与连接解耦」（`sessionId` 存 `sessionStorage`、断线重连恢复），但实际运行中它带来的是负收益：
+
+  1. **前后端状态必然发岔** —— 刷新后客户端渲染宿主回到欢迎页（不发 `page.navigated`），服务端却仍保留刷新前的
+     `currentPage` / `recentObservations` / `pageExposedKeys`，下一轮 prompt 会告诉模型一个并不存在的"当前页"。
+  2. **刷新后旧 run 继续串流，还能并发起第二个 run** —— `activeAgents` 按 sessionId 保活、`rpc.register` 覆盖式注册，
+     于是旧 run 的输出继续推到刷新后的页面；此时再发消息会跑起两个并发 Agent，且旧实例的引用被覆盖后**再也 cancel 不掉**。
+  3. **"多轮对话"其实不存在** —— `session.history` 只写不读，`new Agent()` 也没带 `initialMessages`，
+     每轮都是单轮无记忆对话。也就是说"保持 session"保住的只是陈旧页面上下文，没保住对话本身。
+
+  **改为**
+
+  - **会话 = 连接**：握手即新建、断开即销毁；客户端零持久化（刷新 / 重连 = 全新会话，聊天区清空并提示）；
+    多条 WS 连接并存时各自独立会话。
+  - **断开即止损**：`handleDisconnect` 依次 abort 在跑的 run → 销毁会话（含清理观察等待）→ 注销 RPC → 释放 agent 实例。
+  - **连接内真多轮**：`AgentService` 为每个会话维护一个长驻 `AgentRuntime`（`state.messages` 即对话轨迹，
+    含 tool-call / tool-result）；每轮的动态页面上下文（manifest + 规则 + 当前页可用方法 + 最近观察）
+    由 SDK 的 `prepareTurn` 投影注入（只影响当次请求、不回写轨迹），并按 `MAX_TURN_MESSAGES`（默认 24）做有界裁剪。
+  - **同会话串行**：运行中再次 `chat.send` 会被显式拒绝并回 `chat.error`（SDK 侧也有 "already running" 保护）。
+  - `SESSION_TTL_MS` 保留为**僵尸兜底回收**（异常路径未触发 disconnect 时），不再承担"保活"语义。
+  - 客户端新增「新会话」入口（内置 `ChatPanel` 标题栏按钮），等价于刷新页面但不必关标签页。
+
+  **迁移**
+
+  - 自定义宿主若曾读取 `session.ready.resumed` 或自行持久化 `sessionId`，直接删除相关逻辑（协议不再提供）；
+    旧服务端 + 新客户端、或新服务端 + 旧客户端都能工作（服务端忽略入参 `sessionId`，客户端不读 `resumed`）。
+  - 需要"记住上次会话"的场景不再支持：刷新即新会话是本版本的**有意行为**。
+
+- 渲染面（`surface`）与 `createRuntime` 不再各判一次；headless 补齐状态行所需的两项；清理两个从未接线的心跳参数
+
+  - **`surface` 缺省自动推导**（新增纯逻辑 `lib/surface.ts` + 导出 `resolveSurfaceKind`）：
+    给了 `createRuntime` ⇒ `host`，否则 ⇒ `container`；显式传入仍优先。
+    此前判据散在两处（`WebAssistant.vue` 判渲染区、`useRuntimeHost` 判 init 挂载点），
+    只给 `createRuntime` 忘给 `surface:'host'` 会**静默错配**：runtime 实际是 host 面，
+    面板却仍渲染一整列空的「渲染区域」；只给 `surface:'host'` 忘给 `createRuntime` 则一路走到 init
+    才抛「渲染容器未就绪」（与真实原因对不上）。现在：判据唯一，且显式 host 无 `createRuntime` 时
+    `useWebAssistant` 立即抛清晰错误。
+  - `useRuntimeHost` / `useWebAssistant` 新增转出 **`navigationSource`**（最近一次导航来源）、
+    `useWebAssistant` 新增转出 **`pageExposedKeys`**（当前页 expose key 列表）——
+    自写 UI 的宿主（如 demo 的 host dock）此前必须自己 `runtime.on('navigate')` /
+    `runtime.on('page-exposed-changed')` 各订阅一遍，现已删除。
+  - 移除从未接线的 `agentBase` 与 `forwardPageEvents`（WS 为唯一链路的现状下二者无实现，
+    文档里描述的 HTTP/SSE 路径早已退役）。
+  - demo `AssistantDock.vue` 因此少写 4 处重复（两个本地 ref + 两个 runtime 订阅），
+    且不再显式传 `surface: 'host'`。
+
+### Patch Changes
+
+- host 模式（`surface="host"`）的「无渲染区」改为**紧凑提示条**；样式入口与内嵌高度写进接入文档
+
+  - `WebAssistant`：host 模式不再用**一整列**空面板充当「宿主直连模式」提示 —— 面板落在窄容器里
+    （宿主右下角 dock 是 host 模式的主要场景）会把对话区挤到 ~120px。现在 header 下方是一条紧凑提示条
+    （模式徽标 + 提示文案 + 加载/打断），错误横幅（`.host-error`）紧跟其后；当前页指示仍保留
+    （`pageTitle` 在 header 右侧，宿主关掉 header 时才在提示条里补一份，避免同一句话出现两遍）。
+    容器模式（`surface` 缺省）的 DOM 与样式逐字节不变。
+  - 顺带把 demo 侧踩到的两件事写进 `docs/INTEGRATION_GUIDE.md §9`：chat-client 是**预构建库**，
+    宿主必须自己 `import '@webassistant/chat-client/style.css'`；内嵌面板必须给 `--wa-height`
+    （组件根缺省 `height: 100vh`，会被容器 `overflow` 裁掉底部 → 输入栏看不见）。
+
+- 宿主直连（用法 B）两处修复；chat-client 收窄为纯组件库（演示统一到 demo-app）
+
+  - `wc-runtime-vue`：host 模式下**不再拦住宿主自己的路由**。内核守卫此前对宿主的任何导航都调用
+    `canNavigate`，而内核只认页面目录 → runtime 存活期间点不进登录页 / 404 / 宿主演示页
+    （vue-router 以 NavigationFailure resolve，没有任何报错，表现为「点了没反应」）。
+    新增桥选项 `passThroughUnknownRoutes`（host 恒开）：目录外的路由放行且不回流内核；
+    容器模式缺省 false，行为逐字节不变。
+  - `chat-client`：`debug` 的 `globalThis.__waRuntime` 句柄在卸载时改为「只在当前挂着的还是本实例」
+    才删除 —— 同页第二个 runtime（例如 WC 演示页 + 宿主 dock）不会再把仍在运行的实例句柄抹掉。
+    同时移除库内自带的 SPA demo（`index.html` / `src/main.ts` / `src/style.css` / `vite.config.ts`
+    与 `dev` / `preview` / `build` 脚本）：库只管组件，演示统一在 demo-app 里做。
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @webassistant/protocol@0.3.0
+  - @webassistant/wc-runtime-vue@0.5.0
+  - @webassistant/wc-runtime-core@0.3.2
+
 ## 0.5.0
 
 ### Minor Changes
