@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/wc-runtime-vue",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "WC runtime 的 Vue 实现与唯一对外门面（容器 / 页面注册 / vue-router 桥 / 服务注入）",
   "main": "./dist/index.js",
