@@ -131,7 +131,7 @@ export function createKernel(deps: KernelDeps): Runtime {
     const location = nav.current
     const route = nav.currentRoute
     if (!location || !route) return {}
-    return resolveProps({ route, params: location.params, props: location.props })
+    return resolveProps({ route, params: location.params, query: location.query, props: location.props })
   }
 
   function buildView(): RuntimeView {

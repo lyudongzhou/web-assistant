@@ -17,6 +17,11 @@
       "import": "./dist/parseComponent.js",
       "default": "./dist/parseComponent.js"
     },
+    "./routeScan": {
+      "types": "./dist/routeScan.d.ts",
+      "import": "./dist/routeScan.js",
+      "default": "./dist/routeScan.js"
+    },
     "./ai": {
       "types": "./dist/ai.d.ts",
       "import": "./dist/ai.js",

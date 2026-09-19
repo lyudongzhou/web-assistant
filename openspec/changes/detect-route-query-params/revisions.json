@@ -1,0 +1,37 @@
+{
+  "changeId": "detect-route-query-params",
+  "revisions": [
+    {
+      "id": "rev-q1",
+      "description": "ManifestParam 增加可选的 `description`；ai.ts 的 AiPageResult 增加 `paramDescriptions`（AI 只给已探测到的参数补文案）；routeScan 从「两遍扫描（先绑定再访问）」改为单遍扫描（要求绑定先于使用），并把解构/起别名（`const q = route.query`）排除在「整块读」诊断之外。",
+      "reason": "设计稿要求 prompt 与显式 query 声明都能带参数说明，但 ManifestParam 原本只有 name/type —— 不补 description 就无法承载「查询参数：keyword(string)：按名称过滤」。类型推断刻意不走 vue-tsc（route.query 的静态类型是 LocationQuery，展开没有信息量），改由 props 类型 + 使用点启发式定稿，因此给 AI 留一个「只补说明、不改结构」的填空位。两遍扫描会让解构键的 hits 顺序跑到源码顺序之前（manifest 可读性差），单遍更符合「按源码顺序」的直觉，代价是要求绑定先于使用（已写进 analyzer README 的已知限制）。",
+      "author": "AI",
+      "createdAt": "2026-09-19T09:20:00.000Z",
+      "metadata": {
+        "type": "contract",
+        "updateTarget": ["design", "delta-specs"],
+        "affectedField": "pages[].params[].description",
+        "source": {
+          "file": "packages/analyzer/src/routeScan.ts",
+          "function": "scanRouteAccess / resolvePageParams"
+        }
+      }
+    },
+    {
+      "id": "rev-q2",
+      "description": "二轮收口：(1) `WcPageEntry.query` 与 `resolvePageParams({ explicit })` 类型由 `ManifestParam[]` 收窄为 `Array<Omit<ManifestParam, 'in'>>`（声明通道固定 query，写 `in` 无效）；(2) query 参数的 `description` 只取声明处最近注释的第一行（`firstLine`），多行 JSDoc 的续行不再进 manifest / agent prompt；(3) 诊断按通道指路 —— params 通道的「无法枚举键」改为「清单 path 补 :段位 / 页面改读 route.query.x」（不再指向 WcPageEntry 里不存在的 params 声明字段）；(4) 显式声明的键与 path 段同名时新增「会下发 path + query 双通道两条入参」告警；(5) 文档与 delta spec 统一口径：显式 `query` 是可选逃生口，只有探测盲区（动态键 / 整块读 / 跨文件封装 useRoute）必须写。",
+      "reason": "落地后发现三处不一致：① 类型允许 `in: 'path'` 但装配时被静默覆盖成 query；② 源码多行 JSDoc 的续行（开发者向说明，如「清单声明可选」）会整段进 manifest 并出现在 agent 的 system prompt 里，而 AI 只填空不补缺、无法清理；③ params 通道的诊断文案让用户去声明 `WcPageEntry` 里并不存在的 `params` 字段。同时「显式 query 必须吗」在文档里表述不一（demo 页面写「可选」、README 却像必填）。本次统一口径并加告警，实测 demo 重跑 analyze 后 manifest 零结构差异、analyzer 39 例全绿。",
+      "author": "AI",
+      "createdAt": "2026-09-19T10:10:00.000Z",
+      "metadata": {
+        "type": "behavior",
+        "updateTarget": ["design", "delta-specs"],
+        "affectedField": "pages[].params[].description",
+        "source": {
+          "file": "packages/analyzer/src/routeScan.ts",
+          "function": "commentOfDeclaration / resolvePageParams"
+        }
+      }
+    }
+  ]
+}

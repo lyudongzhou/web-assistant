@@ -7,6 +7,18 @@ export const MANIFEST_FILE = 'manifest.json'
 export interface ManifestParam {
   name: string
   type: string
+  /**
+   * 下发通道（缺省 `path`，path 参数**不写**该字段）：
+   * - `path`：路由段 `:name` —— vue-router 解析进 `route.params`
+   * - `query`：URL `?name=` —— 进 `route.query`（**路径外的键值只能走这条通道**）
+   *
+   * 由 analyzer 从「路由 path 正则」与「页面源码里 `route.query.x` 的读取」两处推断
+   * （见 `packages/analyzer/src/routeScan.ts`）：agent 无需关心通道，统一放进 render 的 `params`，
+   * runtime 按本字段分流到 `route.params` / `route.query`。
+   */
+  in?: 'path' | 'query'
+  /** 参数说明（query 参数常由 JSDoc / AI 补全；供 agent 规划参考） */
+  description?: string
 }
 
 export interface ManifestProp {

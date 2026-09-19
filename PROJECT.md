@@ -290,6 +290,29 @@ ctx.t('key'); ctx.state.user; ctx.nav.push({ tag })
 - 类型注解偏移会收敛到「起点相同的最外层类型节点」，避免 `Partial<X>` 退化成 `Partial<T>`、`Foo[]` 丢 `[]`。
 - 找不到 `tsconfig.json` / vue 语言插件初始化失败 → 打印 warning 并降级为纯语法解析（自定义类型退化成 `Object`/`Array`），不破坏老宿主。
 
+### 6.7.1.1 路由入参通道：path 与 query（analyzer/routeScan.ts）
+
+- agent 的 `render` 只有一个 `params` 对象；「这个参数走 path 还是走 query」显式写进 manifest（`ManifestParam.in`，缺省 `path`）。
+  为什么必须显式：**path 里没声明的 params 会被 vue-router 丢弃**（`Discarded invalid param`），所以「路径外的键值」
+  只能通过 query 送到页面的 `route.query`。
+- 探测（`analyzer/src/routeScan.ts`，纯静态 AST + 模板正则）：`useRoute()` 绑定名 / `{ query: q }` 别名 /
+  `route.query.x` 与 `route.query['x']` / `const { x: alias } = route.query` / 内联 `useRoute().query.x` / 模板 `$route.query.x`；
+  类型推断 = 同名 props 类型 > `String`/`Number`/`Boolean` 包装 > 兜底字面量（`|| 1`）> `=== 'true'` > `string`。
+- 装配入口 `resolvePageParams()`（analyzer 与 `vite-plugin-wc` 共用）：path 正则 + 探测 + 页面条目的显式 `query` 声明，
+  按 `(name, in)` 去重（同名双通道都保留），显式声明覆盖探测结果。
+- **显式 `query` 声明是可选的**（`WcPageEntry.query?: Array<Omit<ManifestParam,'in'>>`，通道固定 query）：
+  只有探测盲区（动态键 / 整块读 / 跨文件封装）必须写；其余场景写它是为了**覆盖说明 / 类型**。
+  参数说明的自动来源是声明处注释的**第一行**（续行是开发者向说明，不出网）。
+- 读不出来就**只诊断不猜**（`⚠️`）：动态键 / 整块读 `route.query` / `route.params.x` 与 path 不一致；
+  诊断按通道指路（query 盲区 → 清单声明；params 不一致 → 补 path 段位或改读 query），
+  显式声明与 path 段同名时额外提示「会形成双通道两条入参」。
+- runtime 侧（`wc-runtime-core/src/navigation.ts`）：`resolve()` 按 `in` 分流到 `location.query`（值收口 string / string[]）；
+  `sameLocation()` 计入 query（query 变化 = 新导航）；`resolveProps()` 只给**声明过的 prop** 从 `params ?? query` 取值。
+  容器 memory router 与 host 真实 router 都已带 query，两条用法零改动。
+- prompt（`agent-server`）：参数按通道分段（`路径参数：` / `查询参数：`）+ 一条「两种通道都放进 render 的 params」规则句。
+- 详细决策与实测见 openspec change `detect-route-query-params` 与
+  [`docs/analyzer-type-resolution.md`](docs/analyzer-type-resolution.md) 的「补记：路由 query 入参探测」。
+
 ### 6.7.2 项目规则：wc.pages.json → manifest.rules → prompt
 
 - 被服务项目在 `wc.pages.json` 声明规则文档，**两级**：
@@ -449,7 +472,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | 页面清单 / manifest | **同一份**：`wc.pages.json` → `public/wc/manifest.json`，容器面读其中的 `containers` / `pages[].bundle` | **同一份**：宿主面只读页面目录，WC 资产由 core 归一化为空（`forHostSurface`）后忽略 |
 | 页面渲染位置 | 面板内渲染区（容器 shadow root） | 宿主自己的 `<router-view>` |
 | 需要的构建 | `vite.ce.config.ts` + `dist-ce/`（manifest 已共用） | **无**（页面就是宿主组件，也没有第二份 manifest） |
-| 路由参数 | 归一成 props + 内存 router | 真实 `useRoute().params` |
+| 路由参数 | 归一成 props + 内存 router（`in: 'query'` 的键走内存 router 的 query） | 真实 `useRoute().params` / `useRoute().query`（query 键由 runtime 按 manifest 通道填入） |
 | agent 直传 props | element property | 旁路 `useRuntimeServices().pageProps` |
 | `defineExpose` → agent | 容器读 CE 实例 | 读 `currentRoute.matched[].instances.default` 的 `$.exposed` |
 | `defineEmits` → agent | 容器自动捕获 CE 事件 | ⚠️ **不自动捕获**，页面需 `ctx.emit()` |

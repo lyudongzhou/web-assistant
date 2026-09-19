@@ -20,7 +20,8 @@ import {
   type RuntimeManifest,
   type WcPagesConfig,
 } from '@webassistant/protocol'
-import { extractParams, parseComponent, type ParsedComponent } from './parseComponent.js'
+import { parseComponent, type ParsedComponent } from './parseComponent.js'
+import { resolvePageParams } from './routeScan.js'
 import { resolveRuleEntries } from './rules.js'
 import { createTypeResolver, type TypeResolver } from './typeResolver.js'
 import {
@@ -30,6 +31,14 @@ import {
   type AiPageResult,
   type PageFacts,
 } from './ai.js'
+
+// 页面入参探测（path 段 + 源码里的 route.query.x + 清单显式声明）供 analyzer / vite-plugin-wc 共用
+export {
+  resolvePageParams,
+  scanRouteAccess,
+  type ResolvedPageParams,
+  type RouteAccessFacts,
+} from './routeScan.js'
 
 // 规则收集（wc.pages.json 的 rules 声明 → manifest.rules）供 analyzer / vite-plugin-wc 共用
 export {
@@ -112,12 +121,19 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
       ? parseComponent(componentPath, { resolver })
       : { description: '', props: [], events: [], exposes: [] }
 
+    // 页面入参：path 段（正则）+ 源码里读到的 route.query.x（探测）+ 清单显式 query 声明
+    // 通道标记（in）由探测决定：query 参数会经 route.query 下发（path 里没声明的 params 会被 vue-router 丢弃）
+    const resolvedParams = resolvePageParams(routePath, exists ? componentPath : null, {
+      props: comp.props,
+      explicit: page.query,
+    })
+    for (const warning of resolvedParams.warnings) console.warn(`  ⚠️ ${page.name}：${warning}`)
+
     // 本地先定稿：PageFacts 的字段名/类型/签名已经展开好，AI 只在这份骨架上补语义
-    const params = extractParams(routePath)
     const facts: PageFacts = {
       description: comp.description,
       props: comp.props,
-      params,
+      params: resolvedParams.params,
       events: comp.events.map((e) => e.name),
       emits: comp.events,
       exposes: comp.exposes,
@@ -138,7 +154,8 @@ export async function analyze(options: AnalyzeOptions): Promise<RuntimeManifest>
       }
     }
 
-    // AI 只能「填空」：给缺 description 的 props / emits / exposes 补说明，不改结构
+    // AI 只能「填空」：给缺 description 的 props / params / emits / exposes 补说明，不改结构（含名字/类型/通道）
+    const params = applyAiDescriptions(resolvedParams.params, ai?.paramDescriptions)
     const props = applyAiDescriptions(comp.props, ai?.propDescriptions)
     const emits = applyAiDescriptions(comp.events, ai?.emitDescriptions)
     const exposes = applyAiDescriptions(comp.exposes, ai?.methodDescriptions)

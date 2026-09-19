@@ -361,7 +361,7 @@ createHostStorePusher(...).plugin                          createStoreMirror().p
 | 宿主改了 store，页面没动 | 推的是同一个对象引用（state 桥用 `Object.is` 判等 → 认为没变化）；每次推**新对象**（`cloneHostState` 已处理） |
 | agent 侧看不到任何接口数据 | **预期行为**：runtime 不自动采集。请在业务调用点显式 `apiBus.report({ source, data })`；若已声明 `dataSources` 且带 `url`，确认 URL 命中了 `match` |
 | el-select 下拉样式错乱 | 容器缺 `lightDomStyles`（浮层 teleport 到 body 的补丁） |
-| 页面里 `useRoute()` 拿不到参数 | 用 `defineProps` 的 `id` prop（runtime 会把 params 归一为 prop） |
+| 页面里 `useRoute()` 拿不到参数 | path 参数要写在 `wc.pages.json` 的 `path` 里（`:id`，runtime 会归一为 prop）；**path 里没有段位的键（筛选 / 翻页 / 来源标记）读 `route.query.x`** —— analyzer 会自动探测进 manifest 的查询参数通道，agent 把 `x` 放进 `render` 的 `params` 即可（host 模式真实 URL 会出现 `?x=…`） |
 | 面板是「裸 HTML」（没有气泡 / 输入栏样式） | 漏了库的样式入口（预构建库不自动注入 CSS） | `import '@webassistant/chat-client/style.css'` |
 | 看得见对话、看不见输入框 | 内嵌容器没给 `--wa-height`（组件根缺省 `100vh`，被 `overflow: hidden` 裁掉底部） | 挂载点上设 `--wa-height: 100%` |
 

@@ -94,6 +94,13 @@
       "path": "/lab",
       "title": "能力验收室",
       "component": "src/pages/Lab.vue"
+    },
+    {
+      "name": "QueryParamsDemo",
+      "tag": "query-params-demo",
+      "path": "/query-params",
+      "title": "查询参数示例",
+      "component": "src/pages/QueryParamsDemo.vue"
     }
   ]
 }

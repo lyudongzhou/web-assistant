@@ -62,13 +62,19 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '数据源管理' },
   },
   {
+    path: '/query-params',
+    name: 'QueryParamsDemo',
+    component: () => import('../pages/QueryParamsDemo.vue'),
+    meta: { title: '查询参数示例' },
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('../pages/Settings.vue'),
     // 站点设置需要登录 → 演示「宿主自己的守卫」：agent 的导航同样会被拦下来
     //（已知缺口：被拒时 URL 没变，但 agent 侧仍收到 ok:true，见 PROJECT.md 6.9）
     meta: { title: '站点设置', requiresAuth: true },
-  },
+  }
 ]
 
 export const router = createRouter({ history: createWebHashHistory(), routes })

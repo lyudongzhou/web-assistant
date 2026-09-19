@@ -30,6 +30,11 @@ export interface RuntimeRoute {
   framework: string
   /** 页面 bundle 的可加载 URL（已拼好 assetBase）；宿主渲染面模式下为空字符串（页面不经 bundle 渲染） */
   bundle: string
+  /**
+   * 页面入参声明（通道由 `ManifestParam.in` 标记）：
+   * - 缺省 / `path`：路由段 `:name` —— 进 `route.params`，并按旧契约归一为 WC 的 props
+   * - `query`：URL `?name=` —— 进 `route.query`（路径外的键值只能走这条通道），只在页面声明了同名 prop 时才下发 props
+   */
   params: RouteParamDef[]
   props: RoutePropDef[]
   events: string[]

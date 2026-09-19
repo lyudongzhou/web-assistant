@@ -82,7 +82,25 @@ export function parseParams(template: string, path: string): Record<string, stri
 
 function sameLocation(a: RuntimeLocation | null, b: RuntimeLocation): boolean {
   if (!a) return false
-  return a.tag === b.tag && JSON.stringify(a.params) === JSON.stringify(b.params)
+  // query 也是页面状态的一部分：同 tag、同 params 但 query 不同 → 必须算一次新导航
+  // （否则 back 回不到上一个筛选条件，且 duplicated 会吞掉这一跳）
+  return (
+    a.tag === b.tag &&
+    JSON.stringify(a.params) === JSON.stringify(b.params) &&
+    JSON.stringify(a.query) === JSON.stringify(b.query)
+  )
+}
+
+/**
+ * 查询值收口：vue-router 的 LocationQuery 只装 `string | string[]`。
+ * number / boolean → String；数组 → 元素逐个 String；null / undefined 丢弃（等价于不传）。
+ */
+function toQueryValue(value: unknown): string | string[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (Array.isArray(value)) {
+    return value.filter((item) => item !== undefined && item !== null).map((item) => String(item))
+  }
+  return String(value)
 }
 
 export interface NavigationOptions {
@@ -128,7 +146,9 @@ export function createNavigationController(
     }
     let route: RuntimeRoute | undefined
     let params: Record<string, unknown> = { ...(target.params ?? {}) }
-    let query: Record<string, string | string[]> = { ...(target.query ?? {}) }
+    // 显式 query 最后合并（优先级最高）；path 里的 `?a=1` 次之
+    const explicitQuery: Record<string, string | string[]> = { ...(target.query ?? {}) }
+    let pathQuery: Record<string, string | string[]> = {}
 
     if (target.tag) route = byTag(target.tag)
     if (!route && target.name) route = table.find((item) => item.name === target.name)
@@ -138,11 +158,36 @@ export function createNavigationController(
         route = matched.route
         params = { ...matched.params, ...params }
       }
-      query = { ...splitPath(target.path).query, ...query }
+      pathQuery = splitPath(target.path).query
     }
     if (!route) {
       const key = target.tag ?? target.name ?? target.path ?? ''
       return { ok: false, reason: 'not-found', detail: `没有匹配的路由：${key}` }
+    }
+
+    // 入参按 manifest 声明的通道分流：`in: 'query'` 的键走 URL query。
+    // 为什么必须分流：path 里没声明的 params 会被 vue-router 直接丢弃（Discarded invalid param），
+    // 所以「路径外的键值」只能通过 query 送到页面的 `route.query`；未声明的键保持旧行为（留在 params）。
+    const queryNames = new Set<string>()
+    const pathNames = new Set<string>()
+    for (const def of route.params) {
+      if (def.in === 'query') queryNames.add(def.name)
+      else pathNames.add(def.name)
+    }
+    const moved: Record<string, string | string[]> = {}
+    if (queryNames.size) {
+      const rest: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(params)) {
+        if (!queryNames.has(key)) {
+          rest[key] = value
+          continue
+        }
+        const normalized = toQueryValue(value)
+        if (normalized !== undefined) moved[key] = normalized
+        // 同名双通道（path + query 都声明了）：path 通道照旧保留
+        if (pathNames.has(key)) rest[key] = value
+      }
+      params = rest
     }
 
     const location: RuntimeLocation = {
@@ -150,7 +195,7 @@ export function createNavigationController(
       name: route.name,
       path: fillPath(route.path, params),
       params,
-      query,
+      query: { ...pathQuery, ...moved, ...explicitQuery },
       props: { ...(target.props ?? {}) },
       source: target.source ?? 'host',
     }

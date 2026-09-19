@@ -143,7 +143,19 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
       if (page.description) lines.push(`  功能：${page.description}`)
       if (page.keywords?.length) lines.push(`  关键词：${page.keywords.join('、')}`)
       if (page.params?.length) {
-        lines.push(`  必要/可用路由参数：${page.params.map((item) => `${item.name}(${item.type})`).join('、')}`)
+        // 入参按通道分段（manifest 的 params[].in，analyzer 从 path 与页面源码探测得出）：
+        // 路径参数进 URL 路径；查询参数会被下发成 ?key=value，页面用 route.query 读取。
+        const describeParam = (item: (typeof page.params)[number]) =>
+          `${item.name}(${item.type})${item.description ? `：${item.description}` : ''}`
+        const pathParams = page.params.filter((item) => item.in !== 'query')
+        const queryParams = page.params.filter((item) => item.in === 'query')
+        if (pathParams.length) lines.push(`  路径参数：${pathParams.map(describeParam).join('、')}`)
+        if (queryParams.length) {
+          lines.push(
+            `  查询参数：${queryParams.map(describeParam).join('、')}` +
+              '（放进 render 的 params，会作为 URL query 下发，页面通过 route.query 读取）',
+          )
+        }
       }
       if (page.props?.length) {
         lines.push(`  可传 props：${page.props.map((item) => `${item.name}(${item.type})${item.description ? `：${item.description}` : ''}`).join('；')}`)
@@ -190,6 +202,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     lines.push('7. 方法签名里出现的参数必须放进 call_page_method 的 args（按签名顺序），缺失会以 undefined 调用而失败；无参数的方法可省略 args。')
     lines.push('   例：call_page_method({ name: "nextPage" })；call_page_method({ name: "openCreateDialog", args: [{ name: "订单库", host: "10.0.0.9", port: 3306 }] })')
     lines.push('8. 页面方法只用来「打开 / 预填 / 翻页 / 筛选 / 导航」：保存、新增、删除等写后端的动作不在可调用方法里，必须请用户在页面上确认提交；预填后要明确告诉用户「已填好，请确认」。')
+    lines.push('9. render 的 params 同时承载两种入参通道：清单里未标注的是路径参数（进 URL 路径），标注为「查询参数」的会下发成 ?key=value；两者都放进同一个 params 对象，不要改用 props 传参数，也不要自己拼 path 或 query 串。')
 
     // 项目规则：随 manifest 下发（wc.pages.json 的 rules 自动收集），优先于上面的通用规则。
     const projectRules = this.getRules().filter((rule) => !rule.disabled)

@@ -123,7 +123,8 @@ function extractDescription(code: string): string {
   return matched ? matched.trim() : ''
 }
 
-function leadingComment(node: AnyNode): string {
+/** 取紧贴声明的最后一条注释作描述（routeScan 复用同一套「就近」语义） */
+export function leadingComment(node: AnyNode): string {
   const comments = (node.leadingComments ?? []) as Array<{ value: string }>
   if (!comments.length) return ''
   // 「就近」语义：只取紧贴声明的最后一条注释 —— 上方的分区注释（// —— xxx ——）不算描述

@@ -43,8 +43,38 @@ const manifest = await analyze({ configPath: 'wc.pages.json', outPath: 'manifest
 | `props[]` | `defineProps` 运行时写法（行注释作 description）或类型写法 `defineProps<{}>`（展开字段） |
 | `events[]` / `emits[]` | `defineEmits` 数组 / 对象 / 类型写法（元组载荷 → `payloadType`） |
 | `exposes[]` | `defineExpose({...})` 的 key + 顶层函数声明处的 JSDoc + 函数签名 |
-| `params[]` | 路由 path 里的 `:param`（纯正则） |
+| `params[]` | 路由 path 里的 `:param`（通道缺省 `path`）+ 页面源码里 `route.query.x` 的读取（`in: 'query'`）+ `wc.pages.json` 页面条目的显式 `query` 声明 |
 | `description/keywords/exampleQueries` | AI（`--no-ai` 时回退源码里的 `@description`） |
+
+### 3.1 路由入参通道：path 与 query
+
+agent 的 `render` 只有一个 `params` 对象；「这个参数走 path 还是走 query」由 manifest 的 `ManifestParam.in` 表达：
+
+| 通道 | 来源 | 下发方式 |
+|---|---|---|
+| `path`（缺省，**不写该字段**） | `wc.pages.json` 的 `path` 里的 `:param` | 路由段 → `route.params`，并按旧契约归一为 WC props |
+| `query` | 页面源码里 `route.query.x` 的读取（`src/routeScan.ts` 探测）+ 页面条目的显式 `query` 声明 | URL `?x=` → `route.query`（**path 里没声明的 params 会被 vue-router 丢弃**，所以路径外的键值只能走这条通道） |
+
+探测覆盖：`useRoute()` 绑定名 / `const { query: q } = useRoute()` 别名 / `route.query.x` 与 `route.query['x']` /
+`const { x: alias } = route.query` / 内联 `useRoute().query.x` / 模板里的 `$route.query.x`。
+类型推断优先级：同名 `defineProps` 类型 > `String`/`Number`/`parseInt`/`Boolean` 包装 > 兜底字面量（`|| 1`）> `=== 'true'` > 缺省 `string`。
+
+**读不出来的情形不猜，只出诊断**（analyze 时打印 `⚠️`）：
+
+| 诊断 | 怎么解 |
+|---|---|
+| 动态键 `route.query[key]` / 整块读 `{ ...route.query }` / 读 query 的逻辑封装在别的文件（组合式函数里 `useRoute()`） | 用页面条目的 `query` 显式声明这些键 —— **只有这一类必须写** |
+| `route.params.x` 与 path 不一致（vue-router 会丢弃 `Discarded invalid param`） | 在清单的 `path` 里补 `:x`；或让页面改读 `route.query.x`（再按上一行声明） |
+| 显式声明与 path 段同名 | 会形成 path + query 双通道两条同名入参（合法但通常非本意）；只想留一条就去掉其中一处 |
+
+**页面条目的 `query` 是可选的**（逃生口）：探测能拿到的键不必写。它的两个用途是**补探测盲区**（上表第一行）
+和**覆盖说明 / 类型**（显式优先于探测结果）。参数说明的自动来源是声明处注释的**第一行**
+（续行常是开发者向说明，不出网进 prompt）；要写完整业务口径就在 `query` 里给 `description`：
+
+```jsonc
+{ "name": "DatasourceAdmin", "path": "/datasources", "component": "src/pages/DatasourceAdmin.vue",
+  "query": [{ "name": "keyword", "type": "string", "description": "按名称过滤" }] }
+```
 
 ## 4. 跨文件类型解析（typeResolver）
 
@@ -82,3 +112,6 @@ setFilter(patch: Partial<DatasourceFilter>): Promise<DatasourceFilter>
 - `emits[]` 只表达「声明面」，运行时不保证与 `defineEmits` 100% 对齐（agent 参考用）。
 - 优先解析 `<script setup>`（无则退回普通 `<script>`），且只扫**顶层** `defineProps` / `defineEmits` / `defineExpose` 调用；
   选项式 `setup()` / 非顶层 `defineXxx` 不解析。
+- 路由 query 探测**要求绑定先于使用**（`const route = useRoute()` 出现在读取之前）—— 跨文件封装了 `useRoute()`
+  （组合式函数里读 query 后 return）探测不到，用页面条目的 `query` 显式声明补。
+- 模板里只认 `$route.query.x` 与脚本已绑定的路由变量名（不做完整模板表达式解析），且方括号键只支持引号字面量。

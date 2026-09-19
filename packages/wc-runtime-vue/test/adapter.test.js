@@ -125,6 +125,34 @@ test('vue bridge：并发 apply 后仍不漏掉页面导航（计数器语义）
   assert.equal(commits.length, 1)
 })
 
+test('vue bridge：core 的 query 通道落到 memory router（页面 useRoute().query 能读到）', async () => {
+  const { bridge, router } = makeBridge()
+  await bridge.apply(
+    {
+      tag: 'user-list',
+      name: 'UserList',
+      path: '/users',
+      params: {},
+      // 路径外的键值（path 里没有 :keyword）只能走 query 通道 ——
+      // 若走 params，vue-router 会直接丢弃（Discarded invalid param）
+      query: { keyword: '订单库' },
+      props: {},
+      source: 'agent',
+    },
+    true,
+  )
+  const current = router.currentRoute.value
+  assert.deepEqual({ ...current.query }, { keyword: '订单库' })
+  assert.equal(current.fullPath, '/users?keyword=%E8%AE%A2%E5%8D%95%E5%BA%93')
+})
+
+test('vue bridge：页面 router.push({ query }) 回流 core 时带上 query', async () => {
+  const { router, commits } = makeBridge()
+  await router.push({ name: 'UserList', query: { keyword: '张三' } })
+  assert.equal(commits.length, 1)
+  assert.deepEqual(commits[0].query, { keyword: '张三' })
+})
+
 test('vue bridge：guard 前移 —— core 拒绝时 vue-router 导航被中止，页面可感知', async () => {
   const { router, commits } = makeBridge((target) =>
     target.name === 'UserDetail' ? { ok: false, reason: 'aborted' } : { ok: true },

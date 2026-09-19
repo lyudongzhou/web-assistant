@@ -342,7 +342,14 @@
       "title": "数据源管理",
       "framework": "vue",
       "bundle": "pages/datasourceAdmin.js",
-      "params": [],
+      "params": [
+        {
+          "name": "keyword",
+          "type": "string",
+          "in": "query",
+          "description": "按名称过滤（URL 查询参数 keyword；agent 传 params.keyword → runtime 下发成 ?keyword=…）"
+        }
+      ],
       "props": [
         {
           "name": "sources",
@@ -388,20 +395,21 @@
           "description": "agent 可调用（只预填、不提交）：打开「新增数据源」弹窗并用 preset 预填，返回表单快照 —— 只打开、不落库，提交仍由用户点「确定」（save / onSubmit 未 expose）"
         }
       ],
-      "description": "数据源管理页：展示数据源列表，支持带 token 的自检请求与新增数据源。",
+      "description": "数据源管理页：展示数据源列表，支持按名称过滤、带 token 自检请求与新增数据源。",
       "keywords": [
         "数据源管理",
         "数据源列表",
         "新增数据源",
-        "自检请求",
+        "自检",
         "启用状态",
-        "负责人"
+        "负责人",
+        "过滤"
       ],
       "exampleQueries": [
-        "帮我看看现在有哪些数据源",
+        "打开数据源管理页面",
+        "帮我看看有哪些数据源",
         "新增一个 MySQL 数据源",
-        "只显示启用的数据源",
-        "对这条数据源做一次自检"
+        "只显示启用中的数据源"
       ],
       "rules": [
         {
@@ -489,6 +497,70 @@
         "容器隔离下浮层样式会有什么问题？",
         "怎么演示 CSS-in-JS 注入问题？",
         "3D 图谱在容器隔离下怎么展示？"
+      ]
+    },
+    {
+      "tag": "query-params-demo",
+      "name": "QueryParamsDemo",
+      "path": "/query-params",
+      "title": "查询参数示例",
+      "framework": "vue",
+      "bundle": "pages/queryParamsDemo.js",
+      "params": [
+        {
+          "name": "keyword",
+          "type": "string",
+          "in": "query",
+          "description": "按名称搜索（string）：`String(...)` + `|| ''` 兜底 → analyzer 推断为 string"
+        },
+        {
+          "name": "page",
+          "type": "number",
+          "in": "query",
+          "description": "页码（number）：`Number(...)` + `|| 1` → analyzer 推断为 number（agent 传数字也会被收口成 query 字符串）"
+        },
+        {
+          "name": "sort",
+          "type": "string",
+          "in": "query",
+          "description": "排序字段（取值域：id | name；方括号字面量键 route.query['sort']）"
+        },
+        {
+          "name": "from",
+          "type": "string",
+          "in": "query",
+          "description": "来源标记（string）：外部链接 / agent 标注带进来，走别名读 `q.from`"
+        },
+        {
+          "name": "tab",
+          "type": "string",
+          "in": "query",
+          "description": "当前选中的标签页标识（string），用于切换页面内的不同视图或分类。"
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "in": "query",
+          "description": "状态筛选条件（string），用于按记录状态过滤列表数据。"
+        }
+      ],
+      "props": [],
+      "events": [],
+      "description": "查询参数示例页：从 URL 查询参数读取关键词、页码、排序等条件，进行筛选、排序和翻页，并把状态写回 URL。",
+      "keywords": [
+        "查询参数",
+        "URL 参数",
+        "筛选",
+        "排序",
+        "翻页",
+        "搜索",
+        "状态同步"
+      ],
+      "exampleQueries": [
+        "按名称搜索并翻到第 2 页",
+        "按 id 排序查看列表",
+        "把当前筛选条件同步到 URL 查询参数",
+        "从外部链接带 from 标记进入页面"
       ]
     }
   ],

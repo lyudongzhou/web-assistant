@@ -66,6 +66,8 @@ export interface AiPageResult {
   exampleQueries: string[]
   /** 补齐 props 里缺 description 的字段：{ 字段名: 说明 } */
   propDescriptions?: Record<string, string>
+  /** 补齐 params（含 query 通道）里缺 description 的参数：{ 参数名: 说明 } */
+  paramDescriptions?: Record<string, string>
   /** 补齐 emits 里缺 description 的事件：{ 事件名: 说明 } */
   emitDescriptions?: Record<string, string>
   /** 补齐 exposes 里缺 description 的方法：{ 方法名: 说明 } */
@@ -113,10 +115,11 @@ export function buildPrompt(page: AiPageInput): string {
     '  "keywords": ["用户可能的意图关键词，3-8 个"],',
     '  "exampleQueries": ["用户可能说的话，2-4 句"],',
     '  "propDescriptions": { "props 里缺 description 的字段名": "一句话说明" },',
+    '  "paramDescriptions": { "params 里缺 description 的参数名（含查询参数）": "一句话说明" },',
     '  "emitDescriptions": { "emits 里缺 description 的事件名": "一句话说明" },',
     '  "methodDescriptions": { "exposes 里缺 description 的方法名": "一句话说明" }',
     '}',
-    '注意：三个 *Descriptions 的 key 必须来自上面 PageFacts 里已有的名字，只补 description 为空的项；',
+    '注意：四个 *Descriptions 的 key 必须来自上面 PageFacts 里已有的名字，只补 description 为空的项；',
     '没有需要补的就返回空对象 {}。',
   ].join('\n')
 }
@@ -199,6 +202,7 @@ export async function analyzeWithAI(page: AiPageInput, options: AiOptions = {}):
     keywords: toStringList(parsed.keywords),
     exampleQueries: toStringList(parsed.exampleQueries),
     propDescriptions: toStringMap(parsed.propDescriptions),
+    paramDescriptions: toStringMap(parsed.paramDescriptions),
     emitDescriptions: toStringMap(parsed.emitDescriptions),
     methodDescriptions: toStringMap(parsed.methodDescriptions),
   }

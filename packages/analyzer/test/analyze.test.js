@@ -41,6 +41,24 @@ test('analyze：无 container（宿主直连批次，用法 B）→ 不写 conta
   assert.equal(manifest.pages[0].path, '/users')
 })
 
+test('analyze：页面源码里读 route.query → params 带查询通道（path 无 :param）', async () => {
+  const manifest = await analyze({ configPath, noAi: true })
+
+  const page = manifest.pages.find((p) => p.tag === 'query-page')
+  assert.equal(page.path, '/query')
+  assert.deepEqual(page.params, [
+    // 源码探测：String(route.query.name || '') / Number(route.query.page || 1)
+    { name: 'name', type: 'string', in: 'query', description: '按名称过滤' },
+    { name: 'page', type: 'number', in: 'query' },
+    // 清单显式声明（page.query）覆盖探测结果
+    { name: 'sort', type: 'string', in: 'query', description: '排序字段（清单显式声明）' },
+  ])
+
+  // path 里有 :param 的页面：path 参数不带 in 字段（缺省即 path），探测到的 query 参数带 in
+  const detailPage = manifest.pages.find((p) => p.tag === 'plain')
+  assert.deepEqual(detailPage.params, [])
+})
+
 test('analyze：wc.pages.json 的 dataSources 原样进 manifest.pages[].dataSources', async () => {
   const manifest = await analyze({ configPath, noAi: true })
 

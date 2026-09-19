@@ -20,8 +20,8 @@ wc.pages.json ┤
 
 | 模块 | 内容 |
 |---|---|
-| `wcPages.ts` | `WcPagesConfig` / `WcPageEntry`；`DEFAULT_FRAMEWORK`、`DEFAULT_PAGE_HELPER`、`CONTAINER_ENTRY_KEY`；命名工具 `toKebab` / `kebabToCamel` / `resolveTag` / `pageBundlePath` / `containerBundlePath` / `containerTagName` |
-| `manifest.ts` | `RuntimeManifest`（analyzer 写出的严格格式）、`RuntimeManifestInput`（runtime 接受的宽松输入）、`ManifestPage` / `ManifestContainer` / `ManifestParam` / `ManifestProp`、`MANIFEST_VERSION = 2` |
+| `wcPages.ts` | `WcPagesConfig` / `WcPageEntry`（含 `query` 显式入参声明）；`DEFAULT_FRAMEWORK`、`DEFAULT_PAGE_HELPER`、`CONTAINER_ENTRY_KEY`；命名工具 `toKebab` / `kebabToCamel` / `resolveTag` / `pageBundlePath` / `containerBundlePath` / `containerTagName` |
+| `manifest.ts` | `RuntimeManifest`（analyzer 写出的严格格式）、`RuntimeManifestInput`（runtime 接受的宽松输入）、`ManifestPage` / `ManifestContainer` / `ManifestParam`（含 `in: 'path' | 'query'` 入参通道）/ `ManifestProp`、`MANIFEST_VERSION = 2` |
 | `sse.ts` | `AgentRenderEvent` 渲染指令类型（供 `useAgentChat` 的 tool.call 参数使用；旧 SSE 协议已废弃，对话走 `websocket.ts`） |
 | `pageEvent.ts` | `PageEventPayload`（页面 emit → 容器 → runtime → 宿主 → agent） |
 

@@ -11,6 +11,13 @@
         { "match": "/api/users", "fields": ["id", "name", "role"], "maxRows": 20, "primaryKey": "id" }
       ]
     },
-    { "name": "Plain", "tag": "plain", "path": "/plain", "component": "./Plain.vue" }
+    { "name": "Plain", "tag": "plain", "path": "/plain", "component": "./Plain.vue" },
+    {
+      "name": "QueryPage",
+      "tag": "query-page",
+      "path": "/query",
+      "component": "./QueryPage.vue",
+      "query": [{ "name": "sort", "type": "string", "description": "排序字段（清单显式声明）" }]
+    }
   ]
 }

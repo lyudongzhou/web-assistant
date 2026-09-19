@@ -112,6 +112,7 @@
 - [x] 同一会话禁止并发 run（gateway 显式拒绝 + SDK 内建 "already running" 保护）。
 - [ ] Prompt 注入 pending 请求、事件和剩余等待时间（待后续补全）。
 - [ ] Agent 规则：缺少 id 时寻找支持 keyword 的候选列表页；render 后不假设完成；必要时 wait；失败/超时可有限重试、换策略或询问；只使用观察结果确认的 ID。
+- [x] 入参通道显式化：manifest 的 `params[].in`（`path` / `query`）由 analyzer 从「path 正则 + 页面源码里 route.query.x 的读取」探测得出，prompt 按通道分段；`render` 的 `params` 同时承载两种通道（path 段没声明的键会被 vue-router 丢弃，只能走 query）。详见 openspec `detect-route-query-params`。
 
 ## 5. 数据上报（原「Runtime 透明观察」—— 已改向）
 

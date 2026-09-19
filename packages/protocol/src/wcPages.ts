@@ -1,7 +1,7 @@
 // wc.pages.json v2 —— 一个 framework 批次的构建清单，是「唯一真相来源」：
 // vite-plugin-wc 读它决定怎么打包，analyzer 读它生成 manifest。
 // 命名规则（tag / 入口名 / 产物路径）统一放在本文件，避免插件与 analyzer 各算一套导致漂移。
-import type { ManifestDataSource } from './manifest.js'
+import type { ManifestDataSource, ManifestParam } from './manifest.js'
 
 export interface WcPageEntry {
   /** 路由名（PascalCase），供 router.push({ name }) 使用 */
@@ -13,6 +13,14 @@ export interface WcPageEntry {
   title?: string
   /** 页面组件路径：相对项目根 / 别名（#、@）/ 裸包名 */
   component: string
+  /**
+   * 页面入参的**显式**声明（逃生口，通道固定为 `query`；声明里不要写 `in`）。
+   *
+   * analyzer 会从页面源码自动探测 `route.query.x` 的读取（见 `packages/analyzer/src/routeScan.ts`），
+   * 所以这里**通常不用写**。只有三类情况需要：动态键（`route.query[key]`）、整块读（`{ ...route.query }`）、
+   * 读 query 的逻辑封装在别的文件里（探测不到）；或者想给参数补/覆盖说明与类型（显式优先于探测）。
+   */
+  query?: Array<Omit<ManifestParam, 'in'>>
   /**
    * 页面级 agent 规则 —— 只在该页面生效（与 manifest 级 rules 同款声明，见 {@link WcRuleEntry}）。
    * analyzer / wcManifestPlugin 自动收集进 `manifest.pages[].rules`。

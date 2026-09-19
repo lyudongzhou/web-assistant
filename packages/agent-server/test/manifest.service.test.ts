@@ -27,6 +27,11 @@ writeFileSync(
           { name: 'setKeyword', signature: '(keyword: string) => void', description: '设置筛选关键字' },
         ],
         emits: [{ name: 'selection-change', payloadType: 'unknown[]', description: '选中行变化' }],
+        params: [
+          { name: 'id', type: 'string' },
+          { name: 'keyword', type: 'string', in: 'query', description: '按名称过滤' },
+          { name: 'page', type: 'number', in: 'query' },
+        ],
         rules: [
           { name: 'page-rule', instructions: '本页只读，不要调用删除。' },
           { name: 'page-legacy', instructions: '已停用页面规则。', disabled: true },
@@ -110,6 +115,19 @@ test('buildAgentContext：page.emit 观察渲染为 [页面事件]', async () =>
   })
   assert.match(prompt, /\[页面事件\] selection-change/)
   assert.match(prompt, /"id":7/)
+})
+
+test('buildAgentContext：入参按通道分段（路径参数 / 查询参数）', async () => {
+  const svc = await makeService()
+  const prompt = svc.buildAgentContext()
+  // path 通道（无 in 字段）只出现在「路径参数」行
+  assert.match(prompt, /路径参数：id\(string\)/)
+  assert.doesNotMatch(prompt, /路径参数：[^\n]*keyword/)
+  // query 通道单独一行，带 description 与下发方式说明
+  assert.match(prompt, /查询参数：keyword\(string\)：按名称过滤、page\(number\)/)
+  assert.match(prompt, /会作为 URL query 下发，页面通过 route\.query 读取/)
+  // 传参规则（避免 agent 用 props / 自己拼 path 承载参数）
+  assert.match(prompt, /render 的 params 同时承载两种入参通道/)
 })
 
 test('buildAgentContext：注入 manifest.rules（跳过 disabled）', async () => {

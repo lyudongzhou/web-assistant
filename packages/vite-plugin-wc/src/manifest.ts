@@ -20,7 +20,12 @@ import {
   type WcPageEntry,
 } from '@webassistant/protocol'
 import { loadWcPages } from './config.js'
-import { collectConfigRuleWatchPaths, resolveComponentTypes, resolveRuleEntries } from '@webassistant/analyzer'
+import {
+  collectConfigRuleWatchPaths,
+  resolveComponentTypes,
+  resolvePageParams,
+  resolveRuleEntries,
+} from '@webassistant/analyzer'
 import { parseComponent, type ParsedComponent } from '@webassistant/analyzer/parseComponent'
 import {
   applyAiDescriptions,
@@ -133,15 +138,6 @@ function mergeHandcraftedFields(
   return merged
 }
 
-// 从路由 path 提取参数
-function extractParams(routePath: string): { name: string; type: string }[] {
-  const out: { name: string; type: string }[] = []
-  for (const match of routePath.matchAll(/:([A-Za-z0-9_]+)/g)) {
-    out.push({ name: match[1], type: 'string' })
-  }
-  return out
-}
-
 function fallbackDescription(title: string | undefined, name: string, comp: ParsedComponent): string {
   const parts = [title ? `${title}页面` : `${name}页面`]
   if (comp.events.length) parts.push(`支持${comp.events.map((e) => e.name).join('、')}等操作`)
@@ -167,12 +163,19 @@ async function analyzePage(
     ? parseComponent(componentPath, { resolver })
     : { description: '', props: [], events: [], exposes: [] }
 
+  // 页面入参：path 段（正则）+ 源码里读到的 route.query.x（探测）+ 清单显式 query 声明
+  // 与 analyzer/analyze.ts 共用 resolvePageParams —— 两条构建路径不再各算一套（含通道标记 in）
+  const resolvedParams = resolvePageParams(routePath, exists ? componentPath : null, {
+    props: comp.props,
+    explicit: page.query,
+  })
+  for (const warning of resolvedParams.warnings) console.warn(`  ⚠️ ${page.name}：${warning}`)
+
   // 本地先定稿：PageFacts 里的字段名/类型/签名已展开，AI 只在这份骨架上补语义
-  const params = extractParams(routePath)
   const facts: PageFacts = {
     description: comp.description,
     props: comp.props,
-    params,
+    params: resolvedParams.params,
     events: comp.events.map((e) => e.name),
     emits: comp.events,
     exposes: comp.exposes,
@@ -192,7 +195,8 @@ async function analyzePage(
     }
   }
 
-  // AI 只能「填空」：给缺 description 的 props / emits / exposes 补说明
+  // AI 只能「填空」：给缺 description 的 props / params / emits / exposes 补说明，不改结构
+  const params = applyAiDescriptions(resolvedParams.params, ai?.paramDescriptions)
   const props = applyAiDescriptions(comp.props, ai?.propDescriptions)
   const emits = applyAiDescriptions(comp.events, ai?.emitDescriptions)
   const exposes = applyAiDescriptions(comp.exposes, ai?.methodDescriptions)

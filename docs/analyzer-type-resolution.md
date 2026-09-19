@@ -130,3 +130,49 @@ manifest v2（结构字段全部来自①，语义字段 description/keywords/ex
 
 **回归**：`packages/analyzer/test/{typeResolver,typeResolution}.test.js` 20 条全绿；fixture `TypeFactsPage.vue` 补了
 `Partial<T>` / `Foo[]` / `Promise<T>` 三种形态的 props、emits 载荷与 expose 签名，之前这三条路径没有用例覆盖。
+
+## 八、补记：路由 query 入参探测（2026-09-19）
+
+**症状**：页面可以不声明路由参数、却用 `const ruleName = computed(() => String(route.query.name || ''))` 读入参（列表页的筛选 / 翻页 / 来源标记都走 query）。
+`extractParams` 只看 `wc.pages.json` 的 `path` 正则 → manifest 的 `params` 为空 → **agent 的 prompt 里没有这个参数，永远不会传**；
+即使猜着传了 `render({ tag, params: { name } })`，它也会落进 `location.params`，而 vue-router 对 path 里没声明的 params
+**直接丢弃**（实测 `Discarded invalid param(s) "name"`）→ 页面 `route.query.name` 恒为空。
+
+**根因**：缺的不是「多扫一段源码」，而是**入参通道没有显式化** —— `location.query` 只能由 `path` 里的 `?a=1` 或 `navigationTarget.query` 填，
+而 agent 的 render 工具只有 `tag` / `params` / `props`，没有任何一条路能把「路径外键值」送进页面的 `route.query`。
+
+**改动**：
+
+1. **协议**（`protocol/src/manifest.ts` / `wcPages.ts`）：`ManifestParam` 新增 `in?: 'path' | 'query'`（缺省 `path`，**path 参数不写该字段**）与 `description`；
+   `WcPageEntry` 新增 `query?: Array<Omit<ManifestParam, 'in'>>` 显式声明逃生口（通道固定 query，声明里写 `in` 没有意义）。
+2. **探测**（新增 `analyzer/src/routeScan.ts`）：`scanRouteAccess()` 纯 AST 探测 `useRoute()` 绑定名 / `{ query: q }` 别名 /
+   `route.query.x`、`route.query['x']`、`const { x: alias } = route.query`、内联 `useRoute().query.x`、模板 `$route.query.x`；
+   类型推断 = 同名 props 类型 > 包装调用 > 兜底字面量 > 恒等比较 > `string`；`resolvePageParams()` 把 path 正则 + 探测 + 显式声明
+   按 `(name, in)` 去重合并，并输出「无法枚举」「`route.params.x` 与 path 不一致」诊断。analyzer 与 `vite-plugin-wc`
+   共用这一个入口（顺手消掉两份重复的 `extractParams`）。
+3. **下发**（`wc-runtime-core`）：`resolve()` 按 `route.params[].in` 把 agent 的 `params` 分流到 `location.query`（值收口 string / string[]）；
+   `sameLocation()` 计入 query（query 变化算新导航）；`resolveProps()` 让**声明过的 prop**从 `params ?? query` 取值，
+   但不把「未声明的 query 键」写进 props（避免污染元素属性）。容器 memory router 与 host 真实 router 都已带 query，**无需改动**。
+4. **prompt**（`agent-server`）：参数按通道分段展示（`路径参数：` / `查询参数：`），并补一条规则句说明 `render` 的 `params` 同时承载两种通道。
+
+**效果**（demo-app 实测）：`DatasourceAdmin.vue`（path `/datasources`，无 `:param`）加了 `route.query.keyword` 过滤后，
+manifest 出现 `{ "name": "keyword", "type": "string", "in": "query" }`；agent 只需把 `keyword` 放进 render 的 `params`，
+两种渲染模式下页面都能通过 `route.query.keyword` 读到（host 模式真实 URL 出现 `?keyword=…`）。
+
+**回归**：`packages/analyzer/test/routeScan.test.js`（7 条）+ `analyze.test.js` 的查询通道用例 +
+`packages/wc-runtime-core/test/routeInputs.test.js`（9 条）+ `agent-server/test/manifest.service.test.ts` 的通道分段用例，全绿。
+详见 openspec change `detect-route-query-params`。
+
+**补记（落地后二轮收口）**：
+
+1. **`query` 是可选的**（文档口径统一）：探测能拿到的键不必在 `wc.pages.json` 里写；显式声明只有两个用途 ——
+   补探测盲区（动态键 / 整块读 / 跨文件封装）、覆盖说明与类型（显式优先）。实测删掉 demo 的两行声明，
+   6 个参数仍在，只是 `sort` / `from` 的说明退回源码注释。
+2. **说明只取注释第一行**（`routeScan.ts` 的 `firstLine`）：query 的 `description` 会进 agent 的 system prompt，
+   多行 JSDoc 的续行常是开发者向说明（"清单声明可选"之类），不该出网。想写完整业务口径 → 用页面条目的 `query`。
+3. **诊断不再指向不存在的字段**：`route.params` 通道的「无法枚举键」改为指路「清单的 `path` 补 `:段位`，或页面改读 `route.query.x`」；
+   显式声明与 path 段同名时新增一条「双通道」告警（同名双通道是合法能力，但多半非本意）。
+4. **类型收窄**：`WcPageEntry.query` / `resolvePageParams({ explicit })` 由 `ManifestParam[]` 收成 `Array<Omit<ManifestParam, 'in'>>`
+   —— 装配时本来就会强制 `in: 'query'`，之前写 `in: 'path'` 会被静默改写。
+5. **回归**：`pnpm --filter @webassistant/analyzer test` 39 例（新增「params 通道诊断文案」「显式声明与 path 同名告警」+ 多行 JSDoc 首行断言）；
+   在 demo 工程重跑 `pnpm analyze` 后 **manifest 零结构差异、零告警**（探测结果与产物一致）。

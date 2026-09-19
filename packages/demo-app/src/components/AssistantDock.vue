@@ -45,6 +45,7 @@ const services = hostServices()
 const SUGGESTIONS = [
   '打开用户列表，找一下李四',
   '帮我新增一个 MySQL 数据源',
+  '打开查询参数示例，按名称「同步」筛选',
   '看看用户列表下一页',
 ]
 

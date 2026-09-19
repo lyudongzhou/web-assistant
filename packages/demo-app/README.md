@@ -42,6 +42,7 @@ pnpm build:ce                   # → dist-ce/（容器 + 页面 bundle；只有
 | `/users/:id` | `pages/UserDetail.vue` | 路由参数 → props、直传 props 旁路（`pageProps.user`）、**agent 只填不交**（`fillEditForm` 预填资料，`save` 未 expose） |
 | `/orders` | `pages/OrderList.vue` | 跨页链路（`userId` 从用户页带过来）、`pageProps` 旁路、`setStatus` / `refresh` / `openDetail` |
 | `/datasources` | `pages/DatasourceAdmin.vue` | **跨文件自定义类型**（analyzer 类型展开）、**页面级 rules**、宿主 store 镜像、token → 请求头、`openCreateDialog`（打开弹窗+预填，不落库） |
+| `/query-params` | `pages/QueryParamsDemo.vue` | **查询参数通道**（`params[].in = 'query'`）：读 `route.query` 做筛选/排序/翻页、写回 URL；类型推断 string/number；显式 `query` 声明（可选，只用来覆盖说明） |
 | `/settings` | `pages/Settings.vue` | **登录守卫 + 401**、`services.t`（i18n 宏）、store 镜像、需要 Authorization 的接口 |
 | `/login` | `pages/Login.vue` | 宿主自己的路由（**不在 manifest**，agent 看不到）；token 写入宿主 store；**不上报**（凭证不出网） |
 | `/lab` | `pages/Lab.vue` | 能力验收室：runtime/apiBus 状态、EP 浮层样式、CSS-in-JS 注入（styleShim）、3D 力导向图 |
@@ -49,6 +50,50 @@ pnpm build:ce                   # → dist-ce/（容器 + 页面 bundle；只有
 
 契约（host 模式硬约束）：路由的 `name` 必须与 manifest 页面的 `name` 逐字相同；
 `/login`、`/lab`、`/assistant` 不在 manifest 里，由桥的 passThrough 放行。
+
+### 2.2 查询参数通道（`/query-params` → `pages/QueryParamsDemo.vue`）
+
+路径里没有 `:param`、但页面用 `route.query.x` 读入参的页面，是这个 demo 里最能说明「入参通道」的一页：
+**analyzer 会从页面源码把查询参数探测出来写进 manifest（`params[].in = 'query'`）**，agent 只要把它放进
+`render` 的 `params`，runtime 就会按通道下发成 `URL?key=value`（容器模式走内存 router，同样成立）。
+
+为什么不能走 `params`：vue-router 会**丢弃** path 里没声明的 params（`Discarded invalid param`），
+所以「路径外的键值」只能通过 query 到达页面的 `route.query`。
+
+本页演示的东西：
+
+| 演示点 | 页面里的写法 | manifest 结果 |
+|---|---|---|
+| 包装调用推断 string | `String(route.query.keyword \|\| '')` | `keyword(string, in=query)` |
+| 包装调用推断 number | `Number(route.query.page \|\| 1)` | `page(number, in=query)` |
+| 方括号字面量键 | `route.query['sort']` | `sort(string)` + 说明来自 `wc.pages.json` 的显式声明 |
+| 别名读 | `const q = route.query` → `q.from` | `from(string)` + 显式声明给说明 |
+| 解构读（含重命名） | `computed(() => { const { status } = route.query; … })` | `status(string)` |
+| 模板读 | `{{ $route.query.tab }}` | `tab(string)` |
+| 写回 URL | `router.replace({ query: next })` | 宿主直连改真实 URL；容器走 RouterBridge 回流 runtime |
+
+> `wc.pages.json` 里那两行显式 `query` 声明（`sort` / `from`）**不是必须的**：删掉后 6 个参数依然全部被探测出来，
+> 它只是演示「探测拿不到好说明时用清单补」这条路（`sort` 写取值域 `id | name`、`from` 写业务含义）。
+> 参数说明的自动来源是源码注释的第一行，续行（开发者向说明）不会进 manifest。
+
+三种驱动方式（效果一样）：
+
+```bash
+# ① 直接改地址栏
+http://localhost:5173/#/query-params?keyword=同步&status=archived&sort=name&page=2&tab=巡检
+
+# ② 让助手说：「打开查询参数示例，按名称「同步」筛选」
+# ③ 控制台（需要 runtime 在页面上）
+__waRuntime.navigate({ tag: 'query-params-demo', params: { keyword: '同步', page: 2 } })
+```
+
+> ⚠️ 语义提醒：runtime 的一次导航会**重建**整份 query（不自动与当前 URL 合并）—— agent 想保留已有筛选，要把这些键一起放进 `render` 的 `params`；页面自己改筛选条件时走 `router.replace({ query })`（本页 `writeQuery` 用的就是这条）。
+
+> 页内数据是**本地静态数据集**（示例只讲入参，不掺接口链路）；要看 dataSources 白名单裁剪去 `/users` 或 `/datasources`。
+> **`wc.pages.json` 里不需要为查询参数写任何东西** —— 本页条目里的 `query: [{ name, type, description }]` 是
+> **可选**的「说明覆盖」：删掉它 analyzer 照样探测出全部 6 个参数（实测：类型不变、零警告），只是 `sort` / `from`
+> 的说明退化成页面里的注释。真正**必须**在清单里声明的是这三类：`route.query[key]` 动态键、`{ ...route.query }` 整块读、
+> 以及「读 query 的逻辑封装在别的文件里」（analyzer 只看页面文件，探测不到）。前两类 analyze 会打 `⚠️` 提示你补。
 
 ### 2.1 「agent 只填不交」：执行面的边界
 

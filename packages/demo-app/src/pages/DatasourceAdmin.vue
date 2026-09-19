@@ -9,7 +9,7 @@
     </PageHeader>
 
     <CapabilityBadge
-      :items="['页面级 rules', '类型化 props/emits', 'call_page_method', '宿主 store 镜像', '观测面 report']"
+      :items="['页面级 rules', '类型化 props/emits', '查询参数 route.query', 'call_page_method', '宿主 store 镜像', '观测面 report']"
       hint="本页的类型写在 src/types/datasource.ts（跨文件自定义类型 → analyzer 展开进 manifest）；页面级规则见 rules/datasource-page.md"
     />
 
@@ -28,6 +28,10 @@
     </div>
 
     <p v-if="notice" class="notice">{{ notice }}</p>
+
+    <!-- 查询参数通道：?keyword=xxx 由 analyzer 探测进 manifest（params[].in='query'），
+         agent 只要把 keyword 放进 render 的 params，runtime 就会下发成 URL query -->
+    <p v-if="keyword" class="notice">当前按名称过滤：{{ keyword }}（URL 查询参数 keyword）</p>
 
     <PageState
       :loading="loading"
@@ -85,7 +89,10 @@
 //   ③ 宿主 store 镜像：页面直接 `useAuthStore()`，容器模式下的值由宿主快照桥推来，代码零改动
 //   ④ agent 只填不交：只 expose「只读 + 预填」（refresh / openCreateDialog），写后端的 save / onSubmit
 //      刻意不进 defineExpose —— agent 想直接落库也调不到（统一约定见 src/utils/agentPreset.ts）
+//   ⑤ 查询参数通道：path（/datasources）里没有 :param，页面用 route.query.keyword 读筛选条件 ——
+//      analyzer 会把它探测成 manifest 的查询参数（in: 'query'），agent 放进 render 的 params 即可
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import PageState from '../components/PageState.vue'
 import CapabilityBadge from '../components/CapabilityBadge.vue'
@@ -119,6 +126,9 @@ const emit = defineEmits<{
 }>()
 
 const auth = useAuthStore()
+const route = useRoute()
+/** 按名称过滤（URL 查询参数 keyword；agent 传 params.keyword → runtime 下发成 ?keyword=…） */
+const keyword = computed(() => String(route.query.keyword || ''))
 const fetched = ref<DatasourceVO[]>([])
 const loading = ref(false)
 const saving = ref(false)
@@ -128,7 +138,8 @@ const authEcho = ref('（未请求）')
 
 const rows = computed(() => {
   const list = props.sources?.length ? props.sources : fetched.value
-  return props.onlyEnabled ? list.filter((item) => item.enabled) : list
+  const named = keyword.value ? list.filter((item) => item.name.includes(keyword.value)) : list
+  return props.onlyEnabled ? named.filter((item) => item.enabled) : named
 })
 
 async function load(): Promise<void> {
