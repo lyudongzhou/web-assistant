@@ -1,5 +1,12 @@
 # @webassistant/analyzer
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [f911e93]
+  - @webassistant/protocol@0.6.0
+
 ## 0.3.1
 
 ### Patch Changes

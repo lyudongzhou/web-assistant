@@ -1,6 +1,6 @@
 {
   "name": "@webassistant/analyzer",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "读 wc.pages.json + 页面源码（静态解析 + AI 语义分析）→ 生成 manifest v2",
   "bin": {

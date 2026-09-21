@@ -1,5 +1,12 @@
 # @webassistant/wc-runtime-core
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [f911e93]
+  - @webassistant/protocol@0.6.0
+
 ## 0.4.1
 
 ### Patch Changes
