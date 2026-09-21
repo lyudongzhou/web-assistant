@@ -1,5 +1,15 @@
 # @webassistant/wc-runtime-vue
 
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [8a2f9e3]
+- Updated dependencies [8a2f9e3]
+- Updated dependencies [9faad13]
+  - @webassistant/protocol@0.5.0
+  - @webassistant/wc-runtime-core@0.4.1
+
 ## 0.5.1
 
 ### Patch Changes

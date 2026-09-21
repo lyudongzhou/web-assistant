@@ -1,5 +1,162 @@
 # @webassistant/protocol
 
+## 0.5.0
+
+### Minor Changes
+
+- 8a2f9e3: 模式与回合边界：act / plan / auto + 计划卡 / 提问卡 / 进度交接（`add-agent-modes-and-plan-turns`）
+
+  修的是「复杂任务跑到一半被单轮步数上限**硬中断**」这一类问题 —— 根因是 SDK 在打满
+  `maxIterations` 时**抛错**（`Agent runtime exceeded maxIterations`），服务端把它 catch 成
+  `failed` → `chat.error`；一轮 run 被当成了任务的全部，用户只能自己再打一句"继续"。
+  顺带补上第二个缺口：信息不足时 agent 没有"提问"这个动作，只能猜参数或退化成"列表让你自己选"。
+
+  ### protocol（**break**：新增 t / 字段，旧客户端会忽略新消息）
+
+  - **新增 server 消息**：`chat.mode`（本轮模式判定）/ `chat.plan`（计划卡）/ `chat.ask`（问题卡）。
+  - `chat.send` 新增可选 `mode`（`auto` / `act` / `plan`）/ `planId`（确认计划）/ `questionId`（回答提问）。
+  - `chat.done` 新增可选 `endedBy`（本轮怎么结束的：`propose_plan` / `ask_user` / `finish_turn`）。
+  - `ToolName` 新增 `propose_plan` / `ask_user` / `finish_turn`（服务端收尾工具，**不会**出现在 `tool.call` 里，
+    只为过程区文案与类型完备）；新增 `TurnEndToolName`。
+  - `AgentRunStatus` 新增 `'waiting-plan'`，并把早已声明未用的 `'waiting-user'` 用起来
+    （都表示"上一轮停在等用户决策"，run 已结束）。
+  - `AgentSession` 新增 `mode` / `modeDecision` / `plan` / `pendingQuestion`（都是 connection-scoped 状态）。
+  - 新增类型：`AgentMode` / `EffectiveMode` / `ModeDecidedBy` / `ModeDecision` / `AgentPlan` /
+    `PlanStep` / `AgentPlanStatus` / `PendingQuestion` 与三个工具入参类型。
+
+  ### chat-client
+
+  - **`chat.send` 支持附加指令**：`agentSocket.sendChat(text, { mode, planId, questionId })`；
+    新增导出 `ChatSendOptions`。
+  - **新增 `lib/turnState.ts`**（纯逻辑，可单测）：模式条 / 计划卡 / 问题卡的状态迁移
+    （`applyMode` / `applyPlan` / `applyAsk` / `approvePlanCard` / `answerAskCard` / `pendingQuestionId` /
+    `describeMode` / `MODE_OPTIONS`）。
+  - **`useAgentChat`**：处理 `chat.mode` / `chat.plan` / `chat.ask`，新增 `mode` / `plan` / `ask` 状态与
+    `sendWith` / `confirmPlan` / `sendWithMode`；`send()` 在有待回答问题时会自动带上 `questionId`
+    （用户直接打字即回答）；`reset()` 一并清空卡片（会话 = 连接）。
+  - **新增三个组件**：`PlanCard`（步骤列表 + 「开始执行」/「重新规划」）、`AskCard`（问题 + 选项按钮）、
+    `ModeSwitch`（自动 / 直接执行 / 先出计划 + 生效模式与判定来源），并从包入口导出。
+  - **`HostAssistantChat` / `ChatPanel`**：新增可选 props `plan` / `ask` / `mode` / `showModeSwitch` 与
+    事件 `approve-plan` / `replan` / `answer` / `change-mode`（数据进、事件出，两条渲染面共用同一批组件）。
+  - **`WebAssistant` / `HostAssistantDock`**：接线卡片与模式切换（模式选择在**下一轮**随 `chat.send` 下发，
+    不打断正在跑的一轮）。
+  - **`useWebAssistant`**：透出 `mode` / `plan` / `ask` / `sendWith` / `confirmPlan` / `sendWithMode`。
+
+  ### agent-server（private，无版本号）
+
+  - 新增 `src/agent/mode.ts`（模式三层判定，纯函数）与 `src/agent/turnEnd.ts`（收尾工具入参校验 +
+    产物 → 消息投影，纯函数）。
+  - 新增三个收尾工具（`lifecycle.completesRun`）+ `hooks.beforeModel`（倒数一步收尾提醒）+
+    `hooks.beforeTool`（plan 硬门禁）；`MAX_AGENT_STEPS` 默认 6 → 12；`exceeded maxIterations`
+    降级为「已暂停」；新增 `MODE_DEFAULT` / `PLAN_GATE` 两个 env。
+
+  测试：`agent-server/test/{mode,turnEnd,session.turns,agent.run}.test.ts`、
+  `chat-client/test/turnState.test.mjs`。
+
+- 8a2f9e3: 计划的交互式修订：改计划不再推倒重来（`add-interactive-plan-revision`）
+
+  修的是「点『重新规划』等于重做计划」这一类问题 —— 旧实现只有一个按钮、宿主发的是**一句固定文案**
+  （`send('这个计划不太合适，请重新规划')`）：用户说不出"改哪一步"，模型只能再 `propose_plan` →
+  新 `planId` + 步骤从 `step-1` 重新编号 + 旧计划标 `superseded` → **已完成步骤的进度全丢**。
+  现在把它做成"带输入、带意图、可增量"的一条路径，并且"不许推倒重来"由服务端保证。
+
+  ### protocol（**break**：新增必填字段，旧客户端会忽略新消息 / 反序列化缺字段）
+
+  - **新增收尾工具 `revise_plan`**：`ToolName` / `TurnEndToolName` 增加 `'revise_plan'`；新增
+    `RevisePlanToolArgs`（`note?` / `summary?` / `steps[]`，每步 `id?` / `title` / `detail?` / `reopen?`）
+    并并入 `ToolArgs`。`steps` 是**修订后的完整步骤序列**：带 `id` = 原地改（保状态），不带 = 新增，
+    未出现 = 删除。
+  - `chat.send` 新增 `revisePlanId`（"本轮是对某计划的修改意见"，与 `planId` 确认、`questionId` 回答对称）。
+  - `chat.plan` 新增 `status`（**必填**，`'proposed' | 'approved'`，服务端权威值）、`revision?`、`revisedAt?`、`note?`。
+  - `AgentPlan` 新增 `revision?` / `revisedAt?`；新增 `PlanTurn` 与 `AgentSession.planTurn?`。
+
+  ### chat-client
+
+  - **`PlanCard`**：次级按钮「重新规划」→ **「修改计划」**（卡内展开输入框 + 「提交修改」/「取消」，
+    `emit` 事件为 `open-revision` / `revision-input` / `cancel-revision` / `revise`）；展示
+    「已修订 · 第 N 版」与变更摘要 `note`；**已批准态同样可改**（改完回到待确认）；
+    弱化链接「重新生成计划」保留全量重来（`emit('replan')`）。
+    **与过程区同构的 panel**：过程区与计划卡共用 `PanelSection`（壳：分隔线 / 折叠头 / 状态行 / 详情 / 动作条）
+    与 `usePanelOpen`（唯一的收缩逻辑）；折叠头都是 `chev + title + meta`、chevron 在最左、整行可点、**等高**。
+    **折叠粒度一致：收起 = 只剩折叠头一行** —— 计划 panel 收起时详情与动作条（「开始执行 / 修改计划」）
+    一起收起，不留常驻按钮行；**默认折叠值跟随状态**（待确认展开、执行中收起，点「开始执行」后自动收成一行）。
+    提交修改后**立即收起输入框**并显示「正在按你的意见更新计划…」（状态行，折叠时也可见）。
+  - **`lib/turnState.ts`**：`applyPlan()` 跟随服务端 `status`（不再无条件重置为 `proposed`）；
+    新增修订草稿态纯函数 `beginPlanRevision` / `updatePlanDraft` / `cancelPlanRevision` /
+    `submitPlanRevision`（提交即收起草稿）/ `settlePlanRevision`。
+    （面板折叠态**不在**这里：它是纯视图状态，与过程区共用 `usePanelOpen`。）
+  - **`useAgentChat` / `useWebAssistant`**：新增 `revisePlan(text, plan?)`（→
+    `sendWith(text, { revisePlanId })`）与 `beginPlanRevision` / `updatePlanDraft` / `cancelPlanRevision` / `replan`。
+  - **`agentSocket.sendChat`**：`ChatSendOptions` 增加 `revisePlanId`。
+  - **`HostAssistantChat` / `ChatPanel`**：新增事件 `revise` / `revision-open` / `revision-input` / `revision-cancel`
+    （`replan` 语义收窄为"重新生成"）。**BREAKING**：接了 `replan` 的宿主请按需改接 `revise`。
+  - **新增 `PanelSection` / `usePanelOpen` 并导出**：过程区与计划卡共用的可折叠面板壳与收缩逻辑
+    （宿主自写 panel 时可用同一套，避免第三个面板又长成另一种折叠样式）。
+    壳负责"同构的那几行"：分隔线 / 底纹、折叠头（chevron 在最左 + **等高行高**）、常驻状态行、
+    **详情限高滚动**（`--wa-panel-body-max`，缺省 200px）、`flex: 0 0 auto`（面板不被长内容压扁）；
+    `usePanelOpen` 的默认值可传 **getter**（默认值本身是状态时用：值变则跟随，值没变不弹回用户的手动折叠）。
+    **注意语义变化**：`#footer` 槽从"常驻"改为**随详情收起**（折叠 = 只剩折叠头一行，与过程区一致）；
+    自定义 panel 若依赖常驻 footer，请把内容放进 `#head-actions`。`TraceTimeline` 的 `.trace-panel` 类
+    （`flex: 0 0 auto` 的那条）已删除，宿主若命中过它请改用 `.panel`。
+  - **`TraceTimeline` 改用共用壳**：`思考中…` 移到常驻状态行（折叠时也可见），样式里只剩过程内容本身。
+  - **`WebAssistant` / `HostAssistantDock`**：接线上述事件，并**删掉硬编码的"这个计划不太合适，请重新规划"**。
+
+  ### agent-server（private，无版本号）
+
+  - `src/agent/turnEnd.ts`：新增纯函数 `normalizeReviseArgs` / `mergePlanRevision` / `describePlanChanges` /
+    `describePlanRevision` / `planCardStatus`；`projectTurnEnd` 增加 `revise_plan` 分支（同 planId + revision + 变更摘要）；
+    `buildPlan()` 补 `revision: 1`。
+  - `src/session/session.service.ts`：新增 `revisePlan()`（原地更新、不标 `superseded`；已批准 → 回 `proposed` 并清 `approvedAt`）
+    与 `setPlanTurn()`。
+  - `src/agent/agent.service.ts`：注册 `revisePlanTool`；`RunTurnOptions` 增加 `revisePlanId` 并写入 `session.planTurn`；
+    修订轮用 `hooks.beforeTool` **硬拦 `propose_plan`**；`resolveRunStatus` 把 `revise_plan` 映射为 `waiting-plan`。
+  - `src/manifest/manifest.service.ts`：prompt 注入「本轮是计划修改 + 用户修改意见」段与规则 15；
+    计划段在修订后标注版本。`traceText.ts` 增加 `revise_plan` 过程区文案。`gateway` 透传 `revisePlanId` 并处理过期卡片。
+
+  测试：`agent-server/test/turnEnd.test.ts`（修订校验与合并语义）、新增 `test/session.revise.test.ts`、
+  扩 `test/agent.run.test.ts` / `test/manifest.service.test.ts` / `test/traceText.test.ts`、
+  `chat-client/test/turnState.test.mjs`；冒烟新增 `SMOKE_EXPECT=revise` 档（真调模型，实测通过）。
+
+- 9faad13: 过程与结果分离：思考走独立通道、过程步骤带起止与耗时
+
+  修的是「思考的过程与结果没有区分的开」这一类问题 —— 根因是 `useAgentChat` 把过程行以
+  `\n> …\n` 追加进**同一条** assistant 消息的 `content` 里，UI 只拿到一根字符串，没有任何
+  字段可区分（且旧客户端不解析 markdown，`>` 就是字面的大于号）。
+
+  ### protocol（加法变更，向后兼容）
+
+  - `chat.text` 新增可选 `channel?: 'text' | 'reasoning'` —— 结果正文与**模型思考**分走两个通道。
+    用可选字段而不是新增 `chat.reasoning` 消息类型：旧客户端会把 reasoning 增量当普通文本渲染
+    （内容不丢、不崩），只是不分栏。
+  - `agent.step` 新增可选 `phase?: 'start' | 'end'` / `tool` / `target` / `args` /
+    `ok` / `error` / `durationMs` —— 过程步骤可「闭合」（成败 + 耗时），文案带动作目标。
+  - `chat.done` 新增可选 `startedAt` / `durationMs` —— 过程区标题的「共 N 步 · X.Xs」。
+
+  ### chat-client
+
+  - **新增 `ChatMessageKind`**：`ChatMessage` 加可选 `kind?: 'message' | 'reasoning' | 'step' | 'error'`
+    与 `at` / `tool` / `target` / `args` / `settled` / `ok` / `error` / `durationMs`。
+    `kind` 缺省仍是结果气泡 —— 老宿主自造的消息行为不变。
+  - **`useAgentChat` 分行**：流式游标按通道各持一个；`agent.step` 独立成条并按 `phase` 就地结算；
+    删除三处硬编码的 `> 正在打开页面…` 过程行（过程文案唯一来源改为 server 的 `agent.step`）。
+    新增返回 `bubbles` / `trace` / `traceSummary`。
+  - **新增 `lib/chatTrace.ts`**（纯逻辑）：`appendStream` / `pushStep` / `splitMessages` /
+    `summarizeTrace` / `mergeTimeline` / `buildTraceRows` / `formatDuration`。
+    `mergeTimeline` 把 agent 步骤与 runtime 活动**合并去重**（同一步不再显示两行）。
+  - **新增 `TraceTimeline` 组件**：过程区（步数 / 进行中 / 失败 / 耗时摘要，步骤行带 ✓/✗/◐ + 耗时，
+    失败原因就地显示，思考渲染成灰色斜体块），流式期间的「思考中…」指示器也收进这里。
+  - **`HostAssistantChat` / `ChatPanel`**：按 `kind` 分流渲染，结果气泡只放结果；
+    删掉各自独立的「思考中…」气泡（消除同一面板里的重复提示）。新增可选 props
+    `showTrace` / `traceDefaultOpen` / `traceDurationMs` / `activities` / `includeActivities`。
+  - **`HostAssistantDock`**：过程区改用 `TraceTimeline`（agent 步骤 + runtime 活动合并），
+    原 `showActivities` / `activitiesDefaultOpen` 语义保留。`HostAssistantActivities` 继续导出
+    （纯 runtime 活动折叠条 + 清空，可单独复用）。
+  - **`WebAssistant`**：渲染区与提示条不再重复「Agent 思考中…」（保留「打断」控制）。
+  - 新增 `--wa-trace-bg` / `--wa-trace-text` 主题变量。
+
+  测试：`test/chatTrace.test.mjs`（纯逻辑）、`test/agentChat.test.mjs`（假 socket 的贯通链路）、
+  `test/render-split.mjs`（SSR 渲染结构，`pnpm --filter @webassistant/chat-client test:render`）。
+
 ## 0.4.0
 
 ### Minor Changes
