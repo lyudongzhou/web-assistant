@@ -42,6 +42,7 @@
       @cancel-revision="emit('revision-cancel')"
       @revise="emit('revise')"
       @replan="emit('replan')"
+      @step-done="emit('step-done', $event)"
     />
     <AskCardView v-if="ask" :ask="ask" :disabled="loading" @answer="onAnswer" />
     <ModeSwitch v-if="showModeSwitch" :mode="mode" @change="emit('change-mode', $event)" />
@@ -123,6 +124,8 @@ const emit = defineEmits<{
   (event: 'revise'): void
   /** 计划卡「重新生成计划」（推倒重来） */
   (event: 'replan'): void
+  /** 计划卡「我已完成，下一步」（人工步骤）：宿主转成 `completeStep(plan, stepId)` */
+  (event: 'step-done', stepId: string): void
   /** 问题卡选项被点 */
   (event: 'answer', text: string, questionId: string): void
   /** 模式切换 */

@@ -58,6 +58,13 @@ export function describeToolStep(tool: string, args?: unknown): ToolStepDescript
     // 修订也是"结束本轮"的动作：过程区要有一行，否则用户只看到卡片内容变了、不知道谁改的
     return { text: '正在按你的意见更新计划', target: 'plan' }
   }
+  if (tool === 'handoff_step') {
+    // 交接同样是"结束本轮"的动作：过程区要有一行，否则用户只看到 agent 突然停下、又冒出一张卡片
+    const stepId = str((args as { stepId?: unknown } | undefined)?.stepId)
+    return stepId
+      ? { text: `正在把这一步交给你操作（${stepId}）`, target: stepId }
+      : { text: '正在把这一步交给你操作', target: 'handoff' }
+  }
   if (tool === 'ask_user') {
     return { text: '正在向你提问', target: 'ask' }
   }

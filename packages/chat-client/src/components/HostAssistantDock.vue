@@ -53,6 +53,7 @@
         @revision-cancel="cancelPlanRevision"
         @revise="onRevise"
         @replan="onReplan"
+        @step-done="onStepDone"
         @answer="onAnswer"
         @change-mode="onModeChange"
       />
@@ -130,6 +131,7 @@ const {
   send,
   sendWith,
   confirmPlan,
+  completeStep,
   beginPlanRevision,
   updatePlanDraft,
   cancelPlanRevision,
@@ -236,6 +238,16 @@ function onRevise(): void {
  */
 function onReplan(): void {
   replan()
+}
+
+/**
+ * 计划卡「我已完成 / 我已重做，下一步」（人工步骤）：把"这一步我在页面上做完了"交回服务端。
+ *
+ * 服务端据此把该步骤标 `done` 并起一轮，模型**先校验**再继续（校验不过会用 handoff_step
+ * 带 issue 让用户重做）。客户端不本地推进步骤状态 —— 完成由服务端 `chat.plan` 权威下发。
+ */
+function onStepDone(stepId: string): void {
+  completeStep(plan.value ?? undefined, stepId)
 }
 
 /** 问题卡选项被点：带 questionId 发送（服务端把该问题标记为已回答） */

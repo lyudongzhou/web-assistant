@@ -19,21 +19,31 @@ import type {
   AskUserToolArgs,
   CallPageMethodToolArgs,
   FinishTurnToolArgs,
+  HandoffStepToolArgs,
   ProposePlanToolArgs,
   RevisePlanToolArgs,
   RenderToolArgs,
   WaitForObservationToolArgs,
 } from '@webassistant/protocol/websocket'
-import type { AgentMode, AgentRunStatus, AgentSession, ModeDecision } from '@webassistant/protocol'
+import type {
+  AgentMode,
+  AgentPlan,
+  AgentRunStatus,
+  AgentSession,
+  ModeDecision,
+  PlanStep,
+} from '@webassistant/protocol'
 import { DEFAULT_MAX_TURN_MESSAGES, projectTurnMessages } from './turnProjection.js'
 import { resolveDefaultMode, resolveMode, type ModePageHint } from './mode.js'
 import {
+  applyHandoff,
   applyPlanProgress,
   buildPlan,
   buildQuestion,
   mergePlanRevision,
   normalizeAskArgs,
   normalizeFinishArgs,
+  normalizeHandoffArgs,
   normalizePlanArgs,
   normalizeReviseArgs,
   planProgress,
@@ -128,7 +138,8 @@ interface SessionAgentEntry {
    */
   toolStartedAt: Map<string, number>
   /**
-   * 本轮由收尾工具（`propose_plan` / `ask_user` / `finish_turn`）结束时的投影结果。
+   * 本轮由收尾工具（`propose_plan` / `revise_plan` / `handoff_step` / `ask_user` / `finish_turn`）
+   * 结束时的投影结果。
    * 在工具 execute 里写入、在 run 收尾时统一冲刷 —— 这样「卡片 → chat.done」的顺序稳定，
    * 且"兜底文本是否抑制"只在一处判断（见 turnEnd.ts 顶部注释）。
    */
@@ -147,6 +158,8 @@ export interface RunTurnOptions {
   planId?: string
   /** 用户对当前计划的修改意见（计划卡「修改计划」）：值为当前计划 id，`text` 即意见本身 */
   revisePlanId?: string
+  /** 用户点「我已完成，下一步」的步骤 id（计划卡上的手动步骤）：步骤的落库已在 gateway 完成 */
+  stepDoneId?: string
   /** 用户回答的问题 id（问题卡选项；直接打字时为空） */
   questionId?: string
 }
@@ -166,7 +179,7 @@ export function isBudgetExhausted(result: { status: string; error?: Error }): bo
  * 本轮 run 的结束状态。
  * 收尾工具结束的一轮**不是** `completed` 那么简单：
  * - `propose_plan` / `revise_plan` → `waiting-plan`（等用户确认计划）
- * - `ask_user` → `waiting-user`（等用户回答）
+ * - `handoff_step` / `ask_user` → `waiting-user`（等你 —— 前者等你在页面上操作，后者等你回答一个问题）
  * - `finish_turn` / 模型自然结束 → `completed`
  * `waiting-*` 表示"上一轮停在等用户决策"，不是"run 还活着"（run 已经结束了）。
  */
@@ -178,7 +191,7 @@ export function resolveRunStatus(
   if (result.status === 'aborted') return 'cancelled'
   if (result.status === 'failed') return limitExhausted ? 'completed' : 'failed'
   if (turnEnd?.endedBy === 'propose_plan' || turnEnd?.endedBy === 'revise_plan') return 'waiting-plan'
-  if (turnEnd?.endedBy === 'ask_user') return 'waiting-user'
+  if (turnEnd?.endedBy === 'handoff_step' || turnEnd?.endedBy === 'ask_user') return 'waiting-user'
   return 'completed'
 }
 
@@ -473,6 +486,68 @@ export class AgentService {
       },
     })
 
+    const handoffStepTool = createTool<HandoffStepToolArgs, unknown>({
+      name: 'handoff_step',
+      description:
+        '把计划的某一步**交回给用户手做**（这一步你自己做不了；计划必须已由用户确认）。' +
+        '判据：动作是写后端的' +
+        '（保存 / 提交 / 删除 / 审批 / 导入导出）、或在「当前页可用方法」清单里找不到对应方法、' +
+        '或需要人本身才能完成（扫码 / 验证码 / 短信确认 / 线下动作）、或 call_page_method 返回' +
+        '权限不足 / 校验失败 —— 这时**不要反复重试，也不要自己假设用户做完了**。' +
+        'instruction 必须写清"在哪个页面、点什么、做到什么算完成"；目标页不是当前页时先 render 过去。' +
+        '调用后本轮立即结束，用户在页面上做完后会点「我已完成，下一步」，你会在下一轮收到回执。' +
+        '若你**校验发现用户上一次没做对**，也用它并带上 issue（reason 非空即视为"请重做"）—— ' +
+        '**即使用户已经点过「我已完成」**（该步已被标成完成），带 issue 的交接会把它退回"需你重做"，' +
+        '这是纠错的唯一通道（不带 issue 去交接一个已完成的步骤会被拒绝）。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          stepId: {
+            type: 'string',
+            description: '要交接的步骤 id（当前计划里的 step-N，如 step-3）',
+          },
+          instruction: {
+            type: 'string',
+            description: '给用户的操作指引：在哪个页面、点什么、做到什么算完成（别写"你去做一下"）',
+          },
+          issue: {
+            type: 'object',
+            description: '校验发现的问题（带上 = 这一步没做成 / 做错了，请用户重做）',
+            properties: {
+              reason: { type: 'string', description: '哪里不对（给用户看的一句话）' },
+              expected: { type: 'string', description: '期望做成什么样（可选）' },
+            },
+            required: ['reason'],
+          },
+        },
+        required: ['stepId', 'instruction'],
+      },
+      lifecycle: { completesRun: true },
+      retryable: false,
+      maxRetries: 0,
+      execute: async (input: HandoffStepToolArgs) => {
+        const normalized = normalizeHandoffArgs(input, session.plan)
+        const current = session.plan
+        // normalizeHandoffArgs 已经保证有计划；这里只是给 TS 窄化类型
+        if (!current) throw new Error('当前没有可交接的计划')
+        const now = Date.now()
+        const plan = applyHandoff(current, normalized, now)
+        this.sessions.updatePlan(session, plan)
+        const step = plan.steps.find((item) => item.id === normalized.stepId) as PlanStep
+        entry.turnEnd = projectTurnEnd({ tool: 'handoff_step', handoff: { plan, step } })
+        this.logger.log(
+          `handoff_step session=${sessionId} step=${step.id} issue=${normalized.issue ? 'yes' : 'no'} ` +
+            `instruction="${truncate(normalized.instruction)}"`,
+        )
+        return {
+          status: 'waiting-user',
+          stepId: step.id,
+          title: step.title,
+          ...(normalized.issue ? { issue: normalized.issue } : {}),
+        }
+      },
+    })
+
     const finishTurnTool = createTool<FinishTurnToolArgs, unknown>({
       name: 'finish_turn',
       description:
@@ -532,6 +607,7 @@ export class AgentService {
           callPageMethodTool,
           proposePlanTool,
           revisePlanTool,
+          handoffStepTool,
           askUserTool,
           finishTurnTool,
         ],
@@ -708,8 +784,32 @@ export class AgentService {
         })
       }
     }
+    // 人工步骤回执也只在**本轮**有效（与 planTurn 同款理由）：先清上一轮残留，再按本轮 `chat.send` 写入。
+    // 步骤的落库（把 `waiting-user` 标 `done`）已在 gateway 的 `resolveTurnEndInput` 完成 ——
+    // 这里只记"用户刚做完这一步"，prompt 据此要求模型**先校验再继续**。
+    this.sessions.setStepTurn(session, undefined)
+    if (options.stepDoneId) {
+      const stepId = options.stepDoneId
+      const step = session.plan?.steps.find((item) => item.id === stepId && item.status === 'done')
+      if (step) {
+        this.sessions.setStepTurn(session, {
+          kind: 'step-done',
+          stepId,
+          title: step.title,
+          text,
+          at: Date.now(),
+        })
+        this.logger.log(`step done turn session=${sessionId} stepId=${stepId} title="${truncate(step.title)}"`)
+      } else {
+        // 过期卡片 / 该步已被交接成别的步：不记回执，prompt 就不会凭空说"用户完成了第 N 步"
+        this.logger.warn(
+          `step done stale session=${sessionId} stepId=${stepId}（该步骤当前不是已完成的人工步骤）`,
+        )
+      }
+    }
     // 模式判定必须早于任何模型调用（hooks 与 prompt 都要读它），也早于客户端看到的第一条消息
     this.decideMode(session, text, options.mode)
+
     session.activeRun = {
       id: crypto.randomUUID(),
       status: 'running',

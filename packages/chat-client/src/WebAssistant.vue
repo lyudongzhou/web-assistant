@@ -49,6 +49,7 @@
         @revision-cancel="cancelPlanRevision"
         @revise="onRevise"
         @replan="onReplan"
+        @step-done="onStepDone"
         @answer="onAnswer"
         @change-mode="onModeChange"
       />
@@ -149,6 +150,7 @@ const {
   send,
   sendWith,
   confirmPlan,
+  completeStep,
   beginPlanRevision,
   updatePlanDraft,
   cancelPlanRevision,
@@ -235,6 +237,14 @@ function onRevise(): void {
 /** 计划卡「重新生成计划」：推倒重来（保留这条路径，用于"换一套方案"） */
 function onReplan(): void {
   replan()
+}
+
+/**
+ * 计划卡「我已完成 / 我已重做，下一步」（人工步骤）：带 `planId` + `stepDoneId` 的一轮。
+ * 服务端把该步骤标 `done` 后起一轮，模型先校验再继续；校验不过会用 handoff_step 带 issue 让用户重做。
+ */
+function onStepDone(stepId: string): void {
+  completeStep(plan.value ?? undefined, stepId)
 }
 
 function onAnswer(text: string, questionId: string): void {

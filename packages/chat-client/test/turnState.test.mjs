@@ -10,11 +10,15 @@ import {
   applyPlan,
   approvePlanCard,
   beginPlanRevision,
+  beginStepCompletion,
   cancelPlanRevision,
   createTurnState,
   describeMode,
+  describeStepStatus,
+  handoffStep,
   pendingQuestionId,
   settlePlanRevision,
+  settleStepCompletion,
   submitPlanRevision,
   updatePlanDraft,
 } from '../src/lib/turnState.ts'
@@ -222,6 +226,95 @@ test('applyPlan：换一份新计划（重新生成）时丢弃本地草稿', ()
   assert.equal(state.plan?.draft, undefined)
   assert.equal(state.plan?.revising, false)
 })
+
+// ───────── 人工步骤（add-plan-manual-steps）：等你操作的那一步 / 点击反馈 / 服务端权威 ─────────
+
+/** 带一个等待中步骤的计划卡消息（第 2 步轮到用户；`issue` 非空 = 上次没做成） */
+const handoffMsg = (extra = {}) => ({
+  t: 'chat.plan',
+  planId: 'plan-1',
+  summary: '保存并核对订单',
+  createdAt: 1,
+  status: 'approved',
+  steps: [
+    { id: 'step-1', title: '打开订单页', status: 'done' },
+    {
+      id: 'step-2',
+      title: '保存订单',
+      status: 'waiting-user',
+      owner: 'user',
+      instructions: '在订单页点「保存」，看到状态变成已提交',
+    },
+  ],
+  ...extra,
+})
+
+test('describeStepStatus：三态 + "需你重做"（issue 非空）的口径', () => {
+  assert.deepEqual(describeStepStatus({ id: 's', title: 't', status: 'done' }), { tone: 'done', mark: '✓' })
+  assert.deepEqual(describeStepStatus({ id: 's', title: 't', status: 'pending' }), { tone: 'pending', mark: '○' })
+  assert.deepEqual(describeStepStatus({ id: 's', title: 't', status: 'waiting-user' }), {
+    tone: 'waiting',
+    mark: '⏳',
+    label: '需要你操作',
+  })
+  assert.deepEqual(
+    describeStepStatus({ id: 's', title: 't', status: 'waiting-user', issue: { reason: '仍是草稿', at: 1 } }),
+    { tone: 'rework', mark: '!', label: '需你重做' },
+  )
+})
+
+test('handoffStep：只认服务端 waiting-user 的那一步（没有计划 / 没有等待中的步骤 → undefined）', () => {
+  assert.equal(handoffStep(createTurnState()), undefined)
+  assert.equal(handoffStep(applyPlan(createTurnState(), planMsg({ status: 'approved' }))), undefined)
+  const state = applyPlan(createTurnState(), handoffMsg())
+  assert.equal(handoffStep(state)?.id, 'step-2')
+  assert.equal(handoffStep(state)?.instructions, '在订单页点「保存」，看到状态变成已提交')
+})
+
+test('beginStepCompletion：点了「我已完成」只记反馈态，步骤状态不动（服务端权威）', () => {
+  const state = applyPlan(createTurnState(), handoffMsg())
+  const clicked = beginStepCompletion(state, 'plan-1', 'step-2')
+  assert.equal(clicked.plan?.completingStepId, 'step-2')
+  // 步骤还是 waiting-user —— 本地推进会让"服务端说没做成"时界面自相矛盾
+  assert.equal(clicked.plan?.message.steps[1].status, 'waiting-user')
+  // 过期卡片（planId 不匹配）一律不动
+  assert.deepEqual(beginStepCompletion(state, 'plan-old', 'step-2'), state)
+})
+
+test('settleStepCompletion：本轮结束收尾反馈态（失败也能重试）；applyPlan 收到新卡片同样清掉', () => {
+  const clicked = beginStepCompletion(applyPlan(createTurnState(), handoffMsg()), 'plan-1', 'step-2')
+  assert.equal(clicked.plan?.completingStepId, 'step-2')
+  assert.equal(settleStepCompletion(clicked).plan?.completingStepId, undefined)
+  // 无反馈态时是同一引用（不做无意义更新）
+  const idle = applyPlan(createTurnState(), handoffMsg())
+  assert.equal(settleStepCompletion(idle), idle)
+
+  // 服务端下发新卡片（该步 done / 或带 issue 回来）→ 反馈态自动收尾
+  const afterServer = applyPlan(clicked, handoffMsg())
+  assert.equal(afterServer.plan?.completingStepId, undefined)
+})
+
+test('applyPlan：等待中的步骤带着 issue 回来（校验没通过）时卡片仍是 approved', () => {
+  const state = applyPlan(
+    createTurnState(),
+    handoffMsg({
+      steps: [
+        { id: 'step-1', title: '打开订单页', status: 'done' },
+        {
+          id: 'step-2',
+          title: '保存订单',
+          status: 'waiting-user',
+          owner: 'user',
+          instructions: '再点一次保存',
+          issue: { reason: '订单仍是草稿', expected: '状态为已提交', at: 2 },
+        },
+      ],
+    }),
+  )
+  assert.equal(state.plan?.status, 'approved')
+  assert.equal(handoffStep(state)?.issue?.reason, '订单仍是草稿')
+})
+
 
 // 面板折叠不再放这里：它是"面板"的纯视图状态，与过程区共用 `usePanelOpen`
 // （见 test/usePanelOpen.test.mjs）—— 状态机只保留"回合边界"相关的卡片状态。

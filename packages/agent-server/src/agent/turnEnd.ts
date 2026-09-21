@@ -15,6 +15,7 @@ import type {
   ChatPlanMessage,
   ChatTextMessage,
   FinishTurnToolArgs,
+  HandoffStepToolArgs,
   ProposePlanToolArgs,
   RevisePlanToolArgs,
   ServerMessage,
@@ -85,7 +86,157 @@ export function normalizeFinishArgs(args: FinishTurnToolArgs): {
   }
 }
 
-/** 用校验后的入参构造计划（id / 时间由调用方注入） */
+/** 交接指引的长度上限（指引是"在哪点什么"，不是散文；过长直接截断，不值得为此让一整轮失败） */
+export const MAX_HANDOFF_INSTRUCTION = 240
+
+/** 交接入参（校验后） */
+export interface NormalizedHandoffArgs {
+  stepId: string
+  instruction: string
+  issue?: { reason: string; expected?: string }
+}
+
+/**
+ * 校验并归一化 `handoff_step` 入参（把计划的某一步**交回用户手做**）。
+ *
+ * 抛错即"这次交接不成立"（SDK 会把工具结果标成 `isError`，模型自行修正）：
+ * - 没有计划 / 计划已过期 / **计划还没被用户确认** → 人工步骤必须挂在当前这份**已确认**的计划上
+ *   （没确认就交接，等于绕过"等用户确认再执行"的门禁）；
+ * - `stepId` 不在计划里 → 交接一个不存在的步骤，是"界面上什么都没发生"的来源；
+ * - 该步已完成（`done`）**且没带 `issue`** → 没有可交接的东西；
+ *   **带 `issue` 是例外且必须允许**：用户点过「我已完成」后服务端已经把该步标 `done`，
+ *   模型校验发现它其实没做成时，正是要用 `issue` 把它**退回 `waiting-user`** 让用户重做 ——
+ *   不允许这一步，R3（纠错提示）在真机上根本走不到（实测踩到过）；
+ * - `instruction` 为空 → 用户只会收到"你去做一下"，等于没有提示（本变更要消灭的病症之一）。
+ */
+export function normalizeHandoffArgs(
+  args: HandoffStepToolArgs,
+  plan: AgentPlan | undefined,
+): NormalizedHandoffArgs {
+  if (!plan || plan.status === 'superseded') {
+    throw new Error('当前没有可交接的计划；请先调用 propose_plan 并让用户在计划卡上点「开始执行」')
+  }
+  if (plan.approvedAt == null) {
+    throw new Error('计划还没被用户确认（计划卡上还是「计划待确认」）；请让用户点「开始执行」后再交接这一步')
+  }
+  const stepId = typeof args?.stepId === 'string' ? args.stepId.trim() : ''
+  if (!stepId) throw new Error('handoff_step 需要 stepId（当前计划里的步骤 id，如 step-3）')
+  const step = plan.steps.find((item) => item.id === stepId)
+  if (!step) {
+    throw new Error(
+      `handoff_step 引用了当前计划里不存在的步骤 id：${stepId}。` +
+        `当前计划的步骤：${plan.steps.map((item) => `${item.id}（${item.title}）`).join('、')}`,
+    )
+  }
+  const reason = typeof args?.issue?.reason === 'string' ? args.issue.reason.trim() : ''
+  const expected = typeof args?.issue?.expected === 'string' ? args.issue.expected.trim() : ''
+  if (step.status === 'done' && !reason) {
+    throw new Error(
+      `${stepId}「${step.title}」已经完成了，没有要交接的东西。` +
+        '若是**校验发现用户刚才那一步没做成**，请带上 issue（reason，可选 expected）把它交回重做。',
+    )
+  }
+  const instruction = (typeof args?.instruction === 'string' ? args.instruction.trim() : '').slice(
+    0,
+    MAX_HANDOFF_INSTRUCTION,
+  )
+  if (!instruction) {
+    throw new Error(
+      'handoff_step 需要 instruction：写清"在哪个页面、点什么、做到什么算完成"' +
+        '（例如「在订单页填好数量后点『保存』，看到状态变成『已提交』」）',
+    )
+  }
+  return {
+    stepId,
+    instruction,
+    // 只有 reason 非空才算"校验发现问题"；只给 expected 不给 reason 会被当成一次普通交接
+    ...(reason ? { issue: { reason, ...(expected ? { expected } : {}) } } : {}),
+  }
+}
+
+/**
+ * 把交接落到计划上（纯函数，返回新计划，不改入参）。
+ *
+ * 两条规则：
+ * - 目标步 → `waiting-user` + `owner: 'user'` + `instructions`（带 `issue` 时一并写入）；
+ * - **至多一个步骤在等你**：其它仍处于 `waiting-user` 的步骤收回 `pending`
+ *   （UI 只有一个主按钮、prompt 只有一个待办；"同时等用户做两件事"本轮不支持）。
+ */
+export function applyHandoff(
+  plan: AgentPlan,
+  normalized: NormalizedHandoffArgs,
+  now: number,
+): AgentPlan {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      if (step.id === normalized.stepId) {
+        const next: PlanStep = {
+          ...step,
+          status: 'waiting-user',
+          owner: 'user',
+          instructions: normalized.instruction,
+        }
+        // 不带 issue 的交接必须清掉上一次的问题，否则用户会看到"已经改好了"还挂着红字
+        if (normalized.issue) next.issue = { ...normalized.issue, at: now }
+        else delete next.issue
+        return next
+      }
+      if (step.status === 'waiting-user') return { ...step, status: 'pending' as const }
+      return step
+    }),
+  }
+}
+
+/**
+ * 用户点「我已完成 / 我已重做，下一步」的落点：把该步标 `done` 并清 `issue`。
+ * 不是 `waiting-user` 的步骤返回 `undefined`（调用方据此回"这一步不需要你确认"）——
+ * 客户端本地不做这个迁移，状态一律由服务端权威下发（见 `add-plan-manual-steps` D5）。
+ */
+export function applyUserStepDone(
+  plan: AgentPlan,
+  stepId: string,
+): { plan: AgentPlan; step: PlanStep } | undefined {
+  const current = plan.steps.find((step) => step.id === stepId)
+  if (!current || current.status !== 'waiting-user') return undefined
+  const step: PlanStep = { ...current, status: 'done', owner: 'user' }
+  delete step.issue
+  return { plan: { ...plan, steps: plan.steps.map((item) => (item.id === stepId ? step : item)) }, step }
+}
+
+/** 「第 N 步「标题」」的写法（文案与计划卡口径一致） */
+export function describeStepLabel(plan: AgentPlan, step: PlanStep): string {
+  const index = plan.steps.findIndex((item) => item.id === step.id)
+  return index >= 0 ? `第 ${index + 1} 步「${step.title}」` : `步骤「${step.title}」`
+}
+
+/**
+ * 交接的整句文案（`chat.text` 用）：正常交接 / 校验失败两套。
+ *
+ * 两套都必须说清"你现在该做什么"与"做完怎么告诉我" —— 用户唯一的下一步动作就是卡片上那个按钮。
+ */
+export function describeHandoff(plan: AgentPlan, step: PlanStep): string {
+  const label = describeStepLabel(plan, step)
+  if (step.issue) {
+    const expected = step.issue.expected ? `；应该做成：${step.issue.expected}` : ''
+    return (
+      `${label}看起来没做成：${step.issue.reason}${expected}。` +
+      '请在页面上改好后点「我已重做，下一步」，我再校验一遍。'
+    )
+  }
+  return (
+    `${label}需要你在页面上操作：${step.instructions ?? ''}\n` +
+    '做完后点「我已完成，下一步」，我接着往下做。'
+  )
+}
+
+/**
+ * 用校验后的入参构造计划（id / 时间由调用方注入）。
+ *
+ * 步骤只带 `title`（可选 `detail`）：**谁来做这一步**不在这里声明 ——
+ * 某一步是否需要用户手做取决于执行到那一步时页面实际能给什么能力（见 `add-plan-manual-steps` D4），
+ * `owner` 一律由运行期的 `handoff_step` 写入。
+ */
 export function buildPlan(
   normalized: { summary: string; steps: string[] },
   stamp: TurnEndStamp,
@@ -239,12 +390,18 @@ export function mergePlanRevision(
     if (titleChanged || detailChanged) changed.push({ id: step.id, title: step.title })
     else kept += 1
     if (step.reopen && previous.status === 'done') reopened.push(step.title)
-    return {
+    const next: PlanStep = {
       id: step.id,
       title: step.title,
       ...(step.detail ? { detail: step.detail } : {}),
       status: step.reopen ? ('pending' as const) : previous.status,
     }
+    // 人工步骤的"归属 / 指引 / 问题"是这一步的语义，改标题不该把它们丢掉；
+    // `reopen: true`（重做这一步）时清掉问题 —— 否则"重新打开"了却还挂着上一次的红字
+    if (previous.owner) next.owner = previous.owner
+    if (previous.instructions) next.instructions = previous.instructions
+    if (!step.reopen && previous.issue) next.issue = previous.issue
+    return next
   })
 
   // 合并**之后**才校验上限：既约束入参，也约束"旧步骤 + 新步骤"的总量
@@ -358,6 +515,8 @@ export function projectTurnEnd(input: {
   changes?: PlanChanges
   /** `revise_plan`：模型自述的修改说明（拼进助手文本；卡片副标题用服务端生成的结构化摘要） */
   note?: string
+  /** `handoff_step`：落库后的计划与该步骤（`status: 'waiting-user'`） */
+  handoff?: { plan: AgentPlan; step: PlanStep }
   /** `ask_user`：落库后的待回答问题 */
   question?: PendingQuestion
   /** `finish_turn`：校验后的入参 */
@@ -410,6 +569,30 @@ export function projectTurnEnd(input: {
     }
   }
 
+  if (input.tool === 'handoff_step') {
+    if (!input.handoff) throw new Error('projectTurnEnd: handoff_step 需要 handoff（plan + step）')
+    const { plan, step } = input.handoff
+    const text = describeHandoff(plan, step)
+    const message: ChatPlanMessage = {
+      t: 'chat.plan',
+      // 交接同样不改 planId：卡片原地更新，用户看到"这一步轮到我"而不是"换了一份计划"
+      planId: plan.id,
+      summary: plan.summary,
+      steps: plan.steps,
+      createdAt: plan.createdAt,
+      status: planCardStatus(plan),
+      revision: plan.revision ?? 1,
+      ...(plan.revisedAt != null ? { revisedAt: plan.revisedAt } : {}),
+    }
+    return {
+      // 卡片 + 一句提示：只发卡片的话，用户不知道要做什么、做完点哪里
+      messages: [message, { t: 'chat.text', delta: text, channel: 'text' }],
+      suppressFallbackText: true,
+      endedBy: input.tool,
+      text,
+    }
+  }
+
   if (input.tool === 'ask_user') {
     if (!input.question) throw new Error('projectTurnEnd: ask_user 需要 question')
     const message: ChatAskMessage = {
@@ -446,6 +629,11 @@ export function projectTurnEnd(input: {
 /**
  * 按 `finish_turn` 的 `done` / `doneAll` 更新计划步骤状态（纯函数，返回新计划）。
  * `done` 里出现但当前计划没有的 id 直接忽略（模型可能记错），不报错 —— 收尾路径不能失败。
+ *
+ * **人工步骤是例外**（`add-plan-manual-steps`）：`waiting-user` 的步骤**只能**由用户点
+ * 「我已完成，下一步」（`chat.send.stepDoneId`）推进 —— 模型把它的 id 填进 `done`、
+ * 或置 `doneAll: true`，都不生效；计划也不会因此在仍有等待中的步骤时变成 `completed`。
+ * 这条是**服务端保证**："不许自己假设用户做完了"不能只靠 prompt。
  */
 export function applyPlanProgress(
   plan: AgentPlan | undefined,
@@ -454,11 +642,12 @@ export function applyPlanProgress(
 ): AgentPlan | undefined {
   if (!plan) return undefined
   const doneIds = new Set(finish.done)
-  const steps = plan.steps.map((step) =>
-    finish.doneAll || doneIds.has(step.id) ? { ...step, status: 'done' as const } : step,
-  )
+  const steps = plan.steps.map((step) => {
+    if (step.status === 'waiting-user') return step
+    return finish.doneAll || doneIds.has(step.id) ? { ...step, status: 'done' as const } : step
+  })
   const allDone = steps.every((step) => step.status === 'done')
-  const completed = finish.doneAll || allDone
+  const completed = allDone
   return {
     ...plan,
     steps,

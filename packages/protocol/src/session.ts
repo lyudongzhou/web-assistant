@@ -14,6 +14,12 @@
 // → 本轮记 `planTurn`（意图）→ 模型必须调 `revise_plan`（修订轮内 `propose_plan` 被硬拦）
 // → 服务端按 `PlanStep.id` **增量合并**（保状态、保进度、`planId` 不变、`revision+1`）
 // → 计划卡原地更新，并回到 `proposed` 重新确认。
+//
+// 计划的"人工步骤"（`add-plan-manual-steps`）：执行到 agent 做不了的一步（写后端的动作 /
+// 清单里没有对应方法 / 需要人本身才能完成）→ 模型调 `handoff_step` 把控制权**交回用户**
+// （该步 `waiting-user` + `owner: 'user'` + `instructions` 指引）→ 用户在页面上做完后点
+// 「我已完成，下一步」（`chat.send.stepDoneId`）→ 服务端把该步标 `done` 并起一轮，模型**先校验再继续**；
+// 校验没过 → `handoff_step` 带 `issue` 让用户重做（不会静默往下走）。
 
 import type { PageObservation } from './observation.js'
 
@@ -52,8 +58,24 @@ export interface ModeDecision {
   reason?: string
 }
 
-/** 计划步骤状态 */
-export type PlanStepStatus = 'pending' | 'done'
+/**
+ * 计划步骤状态。
+ *
+ * `waiting-user`（`add-plan-manual-steps`）不是"进度"，而是**控制权交接**：
+ * 这一步 agent 做不了（写后端的动作、清单里没有对应方法、需要人本身才能完成），
+ * 已经交回给用户在页面上手做，等用户点「我已完成，下一步」（`chat.send.stepDoneId`）。
+ * 它是服务端权威的：`finish_turn` 不能替用户把它标成 `done`。
+ */
+export type PlanStepStatus = 'pending' | 'waiting-user' | 'done'
+
+/** 步骤的校验问题（发现这一步没做成 / 做错了时写入；非空 = 等用户修正后重做） */
+export interface PlanStepIssue {
+  /** 哪里不对（给用户看的一句话） */
+  reason: string
+  /** 期望做成什么样（可选） */
+  expected?: string
+  at: number
+}
 
 export interface PlanStep {
   /** 会话内稳定标识（进度交接按它对应） */
@@ -61,6 +83,16 @@ export interface PlanStep {
   title: string
   detail?: string
   status: PlanStepStatus
+  /**
+   * 谁来做这一步：缺省 = agent。
+   * `'user'` 由**运行期交接**写入（`handoff_step`）—— 某一步是否需要用户手做，
+   * 取决于执行到那一步时页面实际能给什么能力，所以不在 `propose_plan` 时预先声明。
+   */
+  owner?: 'agent' | 'user'
+  /** 面向用户的操作指引（交接时给出：在哪个页面、点什么、做到什么算完成） */
+  instructions?: string
+  /** 校验发现的问题（非空 = 等用户重做；用户点「我已完成」后清空） */
+  issue?: PlanStepIssue
 }
 
 export type AgentPlanStatus = 'proposed' | 'approved' | 'completed' | 'superseded'
@@ -93,6 +125,23 @@ export interface PlanTurn {
   /** 被修订的计划 id（客户端带上来的 `revisePlanId`） */
   planId: string
   /** 用户的修改意见（即本轮 `chat.send.text`） */
+  text: string
+  at: number
+}
+
+/**
+ * 本轮的"用户完成了某个手动步骤"回执（`chat.send.stepDoneId` 时写入，仅本轮有效）。
+ *
+ * 与 `PlanTurn` 同款理由：prompt 构建要在**模型调用工具之前**知道"用户刚在页面上做完了第 N 步"，
+ * 模型据此**先校验再继续**（读页面事实），发现没做成时用 `handoff_step` 带 `issue` 让用户重做。
+ */
+export interface StepTurn {
+  kind: 'step-done'
+  /** 用户标记完成的步骤 id */
+  stepId: string
+  /** 步骤标题（prompt 里引用） */
+  title: string
+  /** 用户的补充说明（`chat.send.text`，通常是一句"已完成"） */
   text: string
   at: number
 }
@@ -156,6 +205,8 @@ export interface AgentSession {
   plan?: AgentPlan
   /** 本轮的修改计划意图（`chat.send` 带 `revisePlanId` 时写入；每轮重置） */
   planTurn?: PlanTurn
+  /** 本轮的人工步骤回执（`chat.send` 带 `stepDoneId` 时写入；每轮重置） */
+  stepTurn?: StepTurn
   /** 最近一次提问（含已回答的历史：`answeredAt` 非空表示已有答复） */
   pendingQuestion?: PendingQuestion
 }

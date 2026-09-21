@@ -8,7 +8,7 @@
 // 早期实现把过程行以 `\n> …\n` 追加进**同一条** assistant 消息的 content 里，
 // 结果 UI 只拿到一根字符串，思考过程与结果在界面上无法分离 —— 那正是本次修复的根因。
 import { computed, ref, shallowRef, type ComputedRef, type Ref } from 'vue'
-import type { AgentMode } from '@webassistant/protocol'
+import type { AgentMode, PlanStep } from '@webassistant/protocol'
 import type {
   AgentStepMessage,
   ServerMessage,
@@ -28,10 +28,13 @@ import {
   answerAskCard,
   // 纯函数与 composable 暴露的动作同名：这里别名成 *State，避免局部函数把自己递归调回去
   beginPlanRevision as beginPlanRevisionState,
+  beginStepCompletion as beginStepCompletionState,
   cancelPlanRevision as cancelPlanRevisionState,
   createTurnState,
+  handoffStep as handoffStepState,
   pendingQuestionId,
   settlePlanRevision,
+  settleStepCompletion,
   submitPlanRevision as submitPlanRevisionState,
   updatePlanDraft as updatePlanDraftState,
   type AskCard,
@@ -90,6 +93,11 @@ export interface UseAgentChatReturn {
   mode: ComputedRef<TurnState['mode']>
   /** 当前计划卡（`chat.plan`；批准后 status 变 approved） */
   plan: ComputedRef<PlanCard | null>
+  /**
+   * 当前"轮到你操作"的那一步（计划里 `status === 'waiting-user'`；没有则 null）。
+   * 宿主自写 UI 时用它判断"要不要让用户去页面上操作"。
+   */
+  handoff: ComputedRef<PlanStep | null>
   /** 当前问题卡（`chat.ask`；回答后有 answer） */
   ask: ComputedRef<AskCard | null>
   /** 发送用户消息（会通过 socket.sendChat 发出） */
@@ -112,6 +120,11 @@ export interface UseAgentChatReturn {
    * 服务端据此把本轮标成"修订轮"，模型调 `revise_plan` 在本计划上增量合并（进度不丢）。
    */
   revisePlan: (input: string, plan?: PlanCard) => void
+  /**
+   * 人工步骤完成回执（计划卡的「我已完成，下一步」）：发送一条带 `planId` + `stepDoneId` 的消息。
+   * 服务端把该步骤标 `done` 后起下一轮，模型**先校验**再继续。
+   */
+  completeStep: (plan?: PlanCard, stepId?: string) => void
   /** 重新生成计划（全量重来，走 propose_plan） */
   replan: () => void
   /** 切换模式并立刻以新模式发一轮（ModeSwitch 用） */
@@ -203,6 +216,8 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         turnDurationMs.value = message.durationMs
         // 本轮结束：修订中的标记收尾（正常路径已由 chat.plan 清掉，这里兜"失败/自然结束"）
         turn.value = settlePlanRevision(turn.value)
+        // 人工步骤的"正在校验"同理：不清的话按钮会一直禁用，用户没法重试
+        turn.value = settleStepCompletion(turn.value)
         // 结束当前流：下一次 chat.text 另起一条消息
         // （server 主动推送的欢迎语等在「上一轮结束后」到达，必须另起气泡而不是追加）
         endStreams()
@@ -212,6 +227,7 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         messages.value.push({ role: 'assistant', content: message.message, kind: 'error', at: Date.now() })
         loading.value = false
         turn.value = settlePlanRevision(turn.value)
+        turn.value = settleStepCompletion(turn.value)
         endStreams()
         break
     }
@@ -330,7 +346,11 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     loading.value = true
     endStreams()
     turnDurationMs.value = undefined
-    if (chatOptions.planId) turn.value = approvePlanCard(turn.value, chatOptions.planId)
+    if (chatOptions.planId && !chatOptions.stepDoneId) {
+      // 人工步骤回执（`stepDoneId`）同样带 `planId`（服务端用它判过期），但它不是"确认计划" ——
+      // 不能顺手把卡片从待确认标成执行中（那会让用户以为计划已被确认，而门禁其实还锁着）。
+      turn.value = approvePlanCard(turn.value, chatOptions.planId)
+    }
     if (chatOptions.questionId) {
       turn.value = answerAskCard(turn.value, message, chatOptions.questionId)
     }
@@ -347,6 +367,33 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     const card = plan ?? turn.value.plan
     if (!card || card.status === 'approved') return
     sendWith('开始执行计划', { planId: card.message.planId })
+  }
+
+  /**
+   * 计划卡的「我已完成，下一步」（人工步骤）。
+   *
+   * 两步动作，顺序有讲究：
+   * 1. 先发（带 `planId` + `stepDoneId`）：服务端把该步标 `done` 并起一轮，模型先校验再继续；
+   * 2. 再标本地反馈态（`completingStepId`）—— 没发出去（离线 / 正在跑一轮）就不要动卡片状态，
+   *    否则按钮会一直禁用，用户没法重试。
+   *
+   * 卡片文案带上步骤标题：用户气泡里出现"已完成第 3 步「保存订单」"，服务端的 `stepDoneId`
+   * 才是权威凭据（`text` 只给人看）。
+   */
+  function completeStep(plan?: PlanCard, stepId?: string): void {
+    const card = plan ?? turn.value.plan
+    if (!card) return
+    const target = stepId ?? handoffStepState(turn.value)?.id
+    if (!target) return
+    const step = card.message.steps.find((item) => item.id === target)
+    const index = card.message.steps.findIndex((item) => item.id === target)
+    const label = index >= 0 ? `第 ${index + 1} 步` : '这一步'
+    const text =
+      step?.issue != null
+        ? `我已经把${label}「${step.title}」改好了，请继续`
+        : `我已完成${label}「${step?.title ?? target}」，请继续`
+    if (!sendWith(text, { planId: card.message.planId, stepDoneId: target })) return
+    turn.value = beginStepCompletionState(turn.value, card.message.planId, target)
   }
 
   /** 展开「修改计划」输入框 */
@@ -443,6 +490,8 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
   const mode = computed(() => turn.value.mode)
   const plan = computed(() => turn.value.plan)
   const ask = computed(() => turn.value.ask)
+  /** 当前等你操作的那一步（计划卡与自写 UI 共用同一口径：只认服务端 `waiting-user`） */
+  const handoff = computed<PlanStep | null>(() => handoffStepState(turn.value) ?? null)
 
   return {
     messages,
@@ -455,9 +504,11 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     mode,
     plan,
     ask,
+    handoff,
     send,
     sendWith,
     confirmPlan,
+    completeStep,
     beginPlanRevision,
     updatePlanDraft,
     cancelPlanRevision,

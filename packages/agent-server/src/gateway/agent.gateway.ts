@@ -12,6 +12,8 @@ import { SessionService } from '../session/session.service.js'
 import { ManifestService } from '../manifest/manifest.service.js'
 import { RpcService } from '../rpc/rpc.service.js'
 import { AgentService } from '../agent/agent.service.js'
+// 计划卡片的权威状态判定（`approvedAt` → proposed/approved）与收尾工具投影共用同一处，避免两处漂移
+import { planCardStatus } from '../agent/turnEnd.js'
 import { truncate, errorText } from '../logging.js'
 
 interface ClientSocket {
@@ -136,7 +138,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const session = this.findSession(client)
     if (!session) return
     this.logger.log(
-      `chat.send session=${session.id} mode=${message.mode ?? '-'} planId=${message.planId ?? '-'} revisePlanId=${message.revisePlanId ?? '-'} questionId=${message.questionId ?? '-'} text="${truncate(message.text)}"`,
+      `chat.send session=${session.id} mode=${message.mode ?? '-'} planId=${message.planId ?? '-'} revisePlanId=${message.revisePlanId ?? '-'} stepDoneId=${message.stepDoneId ?? '-'} questionId=${message.questionId ?? '-'} text="${truncate(message.text)}"`,
     )
     // 同一会话串行：长驻 agent runtime 正在跑时拒绝新的一轮（不再允许并发 run）。
     if (this.agents.isRunning(session.id)) {
@@ -154,6 +156,7 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
       ...(message.mode ? { mode: message.mode } : {}),
       ...(message.planId ? { planId: message.planId } : {}),
       ...(message.revisePlanId ? { revisePlanId: message.revisePlanId } : {}),
+      ...(message.stepDoneId ? { stepDoneId: message.stepDoneId } : {}),
       ...(message.questionId ? { questionId: message.questionId } : {}),
     }).catch((error: unknown) => {
       const reason = errorText(error)
@@ -163,10 +166,12 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
-   * 处理本轮的"用户回应"（计划确认 / 问题回答）。
+   * 处理本轮的"用户回应"（计划确认 / 人工步骤完成 / 问题回答）。
    *
    * - 确认计划：`planId` 命中当前计划才批准；不命中（期间重新规划过）时明确告知用户重新确认，
    *   而不是默默批准一个新计划。
+   * - 完成人工步骤（`stepDoneId`）：命中当前等待中的那一步才推进；不命中时说清原因，
+   *   本轮仍照常跑（否则客户端会卡在 loading）—— 但此时**不记回执**，模型不会被误导。
    * - 回答提问：带 `questionId` 要匹配；用户直接打字（不带 id）也算回答当前未回答的问题 ——
    *   否则"我问了一个问题，用户直接说答案"会被当成普通消息，问题一直挂着。
    */
@@ -186,8 +191,42 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
           channel: 'text',
         })
       }
-      return
     }
+    if (message.stepDoneId) {
+      const outcome = this.sessions.completeUserStep(session, message.planId, message.stepDoneId)
+      if (outcome === 'done') {
+        this.logger.log(`user step done session=${session.id} stepId=${message.stepDoneId}`)
+        // 立刻把"该步已完成"的权威卡片推回去。不推的话客户端只能等下一张卡片，而那一轮很可能
+        // 一张都不推（模型直接继续下一步、或 finish_turn 只推文本）—— 界面会一直停在"轮到你操作"，
+        // 用户以为白点了。卡片用服务端权威状态（客户端不本地推进，见 add-plan-manual-steps D5）。
+        const plan = session.plan
+        if (plan) {
+          this.rpc.notify(session.id, {
+            t: 'chat.plan',
+            planId: plan.id,
+            summary: plan.summary,
+            steps: plan.steps,
+            createdAt: plan.createdAt,
+            status: planCardStatus(plan),
+            revision: plan.revision ?? 1,
+            ...(plan.revisedAt != null ? { revisedAt: plan.revisedAt } : {}),
+          })
+        }
+      } else {
+        this.logger.warn(
+          `user step done ignored session=${session.id} stepId=${message.stepDoneId} reason=${outcome}`,
+        )
+        this.rpc.notify(session.id, {
+          t: 'chat.text',
+          delta:
+            outcome === 'stale'
+              ? '计划已经更新过了，请在上面的计划卡上重新点「我已完成，下一步」。'
+              : '这一步现在不需要你确认（可能已经推进过或计划变了），我按当前计划继续。',
+          channel: 'text',
+        })
+      }
+    }
+    if (message.planId || message.stepDoneId) return
     const answered = this.sessions.answerQuestion(session, message.text, message.questionId)
     if (answered) {
       this.logger.log(`question answered session=${session.id} questionId=${session.pendingQuestion?.id}`)

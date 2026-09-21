@@ -40,7 +40,7 @@ export const SERVER_MESSAGE = {
 /**
  * 工具名。
  *
- * 前三个走 `tool.call` RPC（浏览器执行）；后四个是**服务端收尾工具**
+ * 前三个走 `tool.call` RPC（浏览器执行）；后五个是**服务端收尾工具**
  * （`lifecycle.completesRun`，只更新 session 并产出 `chat.plan` / `chat.ask` / 进度文本，
  * **不会**出现在 `tool.call` 里）—— 它们出现在 `ToolName` 里是为了让过程区
  * （`agent.step.tool`）能给出准确文案。
@@ -51,11 +51,17 @@ export type ToolName =
   | 'call_page_method'
   | 'propose_plan'
   | 'revise_plan'
+  | 'handoff_step'
   | 'ask_user'
   | 'finish_turn'
 
 /** 服务端收尾工具（completesRun）的子集 —— 判断"本轮是怎么结束的"时用它 */
-export type TurnEndToolName = 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'
+export type TurnEndToolName =
+  | 'propose_plan'
+  | 'revise_plan'
+  | 'handoff_step'
+  | 'ask_user'
+  | 'finish_turn'
 
 /**
  * 握手消息。**不带会话标识**：会话是连接作用域的（一个会话 = 一条连接），
@@ -87,6 +93,14 @@ export interface ChatSendMessage {
    * 模型必须调用 `revise_plan` 并回填完整步骤，未改动的步骤保留原 step id，进度因此不丢）。
    */
   revisePlanId?: string
+  /**
+   * 用户点计划卡上的「我已完成，下一步」：值为**被推进的步骤 id**（如 `step-3`），
+   * 与 `planId` 一起下发（`planId` 仍是当前计划，用于过期判断）。
+   *
+   * 语义 = "这一步我在页面上手做完了，你校验并继续" —— 它是**人工步骤唯一的推进口**：
+   * `waiting-user` 的步骤只认它，`finish_turn` 的 `done` 填了也不生效（见 `add-plan-manual-steps`）。
+   */
+  stepDoneId?: string
   /** 回答某个提问（问题卡上的选项 / 直接打字）：值为 `chat.ask` 下发的 questionId */
   questionId?: string
 }
@@ -356,6 +370,34 @@ export interface RevisePlanToolArgs {
 }
 
 /**
+ * `handoff_step` 入参：把计划的某一步**交回给用户手做**（agent 做不了的那一步）。
+ *
+ * 什么时候用（判据，不是感觉）：
+ * - 动作是写后端的（保存 / 提交 / 删除 / 审批），或**页面能力清单里没有**对应方法；
+ * - 需要人本身才能完成的（扫码、验证码、线下动作）；
+ * - `call_page_method` 返回权限不足 / 校验失败 —— 不要反复试，交回用户。
+ *
+ * 带 `issue` 时是第二种用法：**校验发现用户上一次没做对**，请他在页面重做
+ * （该步回到 `waiting-user` 并显示原因，不会被静默跳过）。
+ *
+ * 调用后本轮 run 以 `waiting-user` 收尾（下发的计划卡上该步为 `waiting-user`），
+ * 用户点「我已完成 / 我已重做，下一步」→ `chat.send({ planId, stepDoneId })` 起下一轮。
+ */
+export interface HandoffStepToolArgs {
+  /** 要交接的步骤 id（当前计划里的 `step-N`） */
+  stepId: string
+  /** 给用户的**操作指引**：在哪个页面、点什么、做到什么算完成（必填；别写"你去做一下"） */
+  instruction: string
+  /** 校验发现的问题（可选）：带上 = 这一步没做成 / 做错了，请用户重做 */
+  issue?: {
+    /** 哪里不对（给用户看的一句话） */
+    reason: string
+    /** 期望做成什么样（可选） */
+    expected?: string
+  }
+}
+
+/**
  * `ask_user` 入参：信息不足时向用户提问（一次只问一个问题）。
  * 调用后本轮 run 以 `completed` 收尾（`chat.ask` 下发问题卡），用户回答后起下一轮。
  */
@@ -386,6 +428,7 @@ export type ToolArgs =
   | CallPageMethodToolArgs
   | ProposePlanToolArgs
   | RevisePlanToolArgs
+  | HandoffStepToolArgs
   | AskUserToolArgs
   | FinishTurnToolArgs
 
@@ -407,6 +450,7 @@ export interface ChatDoneMessage {
   /**
    * 本轮的结束方式（收尾工具名）：
    * - `propose_plan`：已给出计划，等用户确认
+   * - `handoff_step`：某一步已交回用户手做（计划卡上该步为 `waiting-user`），等用户点「我已完成，下一步」
    * - `ask_user`：已给出问题，等用户回答
    * - `finish_turn`：进度已交接（可能还有剩余步骤）
    * - 缺省：模型自然结束（或步数用尽被降级为暂停）
@@ -415,12 +459,17 @@ export interface ChatDoneMessage {
 }
 
 /**
- * 计划卡片载荷（`propose_plan` / `revise_plan` 收尾时下发）。
+ * 计划卡片载荷（`propose_plan` / `revise_plan` / `handoff_step` 收尾时下发）。
  * 用户点「开始执行」→ `chat.send({ text, planId })`；点「修改计划」→
- * `chat.send({ text: '<修改意见>', revisePlanId: planId })`；点「重新生成计划」→ 直接发新的任务描述。
+ * `chat.send({ text: '<修改意见>', revisePlanId: planId })`；点「重新生成计划」→ 直接发新的任务描述；
+ * 点「我已完成，下一步」→ `chat.send({ text, planId, stepDoneId })`（`add-plan-manual-steps`）。
  *
  * 修订（`revise_plan`）**不改 planId**：卡片在原位更新，`revision` 递增、`revisedAt` / `note` 说明改动，
  * 用户看到的是"这份计划被改了"而不是"旧卡作废 + 冒出一张新卡"。
+ *
+ * 人工步骤（`handoff_step`）同样**不改 planId**：卡片原地更新，`steps` 里出现
+ * `status: 'waiting-user'` 的那一步就是"现在轮到你了"（带 `instructions` 指引，
+ * 若带 `issue` 则是"上次没做成，请重做"）。客户端不需要新增顶层字段。
  */
 export interface ChatPlanMessage {
   t: 'chat.plan'

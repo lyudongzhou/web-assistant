@@ -5,10 +5,12 @@
 //   ① 计划卡：proposed（等确认）→ approved（执行中）
 //   ② 问题卡：未回答（等回答）→ 已回答
 //   ③ 模式条：每轮开头的判定结果（requested / effective / decidedBy / reason）
+//   ④ 计划里的人工步骤：waiting-user（轮到你操作）→ done（`add-plan-manual-steps`）——
+//      服务端权威，本地只维护 `completingStepId` 这个"刚点完、等校验"的反馈态。
 //
 // 为什么不用 `ChatMessage` 承载卡片：`lib/chatTrace.ts` 把消息严格二分（气泡 / 过程区），
 // 卡片是**交互控件**（有按钮、有状态迁移），塞进消息流会让"过程与结果分离"这条规矩破口。
-import type { AgentMode } from '@webassistant/protocol'
+import type { AgentMode, PlanStep } from '@webassistant/protocol'
 import type { ChatAskMessage, ChatModeMessage, ChatPlanMessage } from '@webassistant/protocol/websocket'
 
 /** 计划卡在客户端的两个阶段（服务端 `ChatPlanMessage.status` 的镜像，UI 只关心这两态） */
@@ -24,6 +26,12 @@ export interface PlanCard {
   draft?: string
   /** 是否正在修订（已提交修改意见、等本轮结束）—— 用于禁用按钮与展示"修改中" */
   revising?: boolean
+  /**
+   * 用户刚点完「我已完成 / 我已重做，下一步」的那一步（等本轮校验）。
+   * 同样是本地瞬时态：只用来给点击即时反馈（按钮禁用 + "正在校验"），
+   * 步骤的 `done` **不在这里改** —— 服务端 `chat.plan` 才是权威（见 `add-plan-manual-steps` D5）。
+   */
+  completingStepId?: string
 }
 
 export interface AskCard {
@@ -73,6 +81,8 @@ export function applyPlan(state: TurnState, message: ChatPlanMessage): TurnState
       status: message.status ?? 'proposed',
       // 修订结果已经回来了（或换了一份计划）→ 退出"修改中"，并收起输入框
       revising: false,
+      // 人工步骤同理：服务端把该步标 done / 或交接成了别的步 → 退出"正在校验"的反馈态
+      // （`steps` 的权威变化走服务端，本地只清自己的瞬时态）
     },
   }
 }
@@ -118,6 +128,65 @@ export function submitPlanRevision(state: TurnState, planId: string): TurnState 
 export function settlePlanRevision(state: TurnState): TurnState {
   if (!state.plan?.revising) return state
   return { ...state, plan: { ...state.plan, revising: false } }
+}
+
+// ---- 人工步骤（`waiting-user`）：交接 / 用户推进 / 校验失败重做 ----
+
+/** 步骤的展示语气（卡片与自写 UI 共用一套口径，免得每处各写一遍 if） */
+export type PlanStepTone = 'done' | 'waiting' | 'rework' | 'pending'
+
+export interface PlanStepDisplay {
+  tone: PlanStepTone
+  /** 行首标记 */
+  mark: string
+  /** 徽标文案（`done` / `pending` 没有徽标） */
+  label?: string
+}
+
+/**
+ * 步骤行的展示口径：
+ * - `done` ✓ 已完成；
+ * - `waiting-user` 且无 `issue` → 「需要你操作」（⏳，服务端已把控制权交回用户）；
+ * - `waiting-user` 且有 `issue` → 「需你重做」（!，上一次校验没通过）；
+ * - `pending` ○ 待做。
+ */
+export function describeStepStatus(step: PlanStep): PlanStepDisplay {
+  if (step.status === 'done') return { tone: 'done', mark: '✓' }
+  if (step.status === 'waiting-user') {
+    return step.issue
+      ? { tone: 'rework', mark: '!', label: '需你重做' }
+      : { tone: 'waiting', mark: '⏳', label: '需要你操作' }
+  }
+  return { tone: 'pending', mark: '○' }
+}
+
+/**
+ * 当前"轮到你操作"的那一步（服务端 `status === 'waiting-user'`）。
+ * 本地从不下这个判断（不推断、不改写 `steps`）—— 交接与推进都由服务端权威下发（见 design D5）。
+ */
+export function handoffStep(state: TurnState): PlanStep | undefined {
+  return state.plan?.message.steps.find((step) => step.status === 'waiting-user')
+}
+
+/**
+ * 用户点了「我已完成 / 我已重做，下一步」：本地只记**反馈态**（按钮禁用 + "正在校验"），
+ * 不把步骤标成 `done` —— 该步的完成由服务端 `chat.plan` 下发（`chat.send.stepDoneId` 的结果）。
+ * `planId` 不匹配（过期卡片）一律不动。
+ */
+export function beginStepCompletion(state: TurnState, planId: string, stepId: string): TurnState {
+  if (!state.plan || state.plan.message.planId !== planId) return state
+  return { ...state, plan: { ...state.plan, completingStepId: stepId } }
+}
+
+/**
+ * 本轮结束（`chat.done` / `chat.error`）收尾"正在校验"的反馈态。
+ * 正常路径已由 `chat.plan` 清掉；这里兜的是"本轮失败了 / 模型没交接也没推进"——
+ * 不清的话按钮会一直禁用，用户没法重试。
+ */
+export function settleStepCompletion(state: TurnState): TurnState {
+  if (!state.plan?.completingStepId) return state
+  const { completingStepId: _completingStepId, ...rest } = state.plan
+  return { ...state, plan: rest }
 }
 
 /**

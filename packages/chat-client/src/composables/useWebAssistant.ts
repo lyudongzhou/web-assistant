@@ -13,7 +13,7 @@ import { useRuntimeHost } from './useRuntimeHost.js'
 import { useAgentChat } from './useAgentChat.js'
 import { useWelcomePage } from './useWelcomePage.js'
 import type { ServerMessage, WelcomePayload, ChatModeMessage } from '@webassistant/protocol/websocket'
-import type { AgentMode } from '@webassistant/protocol'
+import type { AgentMode, PlanStep } from '@webassistant/protocol'
 import type { AskCard, PlanCard } from '../lib/turnState.js'
 import { withActivityOrigin, type WcActivity } from '@webassistant/wc-runtime-vue/host'
 import type {
@@ -108,13 +108,17 @@ export interface UseWebAssistantReturn {
   mode: ComputedRef<ChatModeMessage | null>
   /** 当前计划卡（`chat.plan`）：proposed = 等确认，approved = 执行中 */
   plan: ComputedRef<PlanCard | null>
+  /** 当前等你操作的那一步（计划里 `waiting-user`；没有则 null） */
+  handoff: ComputedRef<PlanStep | null>
   /** 当前问题卡（`chat.ask`）：`answer` 非空表示已回答 */
   ask: ComputedRef<AskCard | null>
   send: (input: string) => void
-  /** 带附加指令发送（模式 / 确认计划 / 回答提问） */
+  /** 带附加指令发送（模式 / 确认计划 / 人工步骤完成 / 回答提问） */
   sendWith: (input: string, options?: ChatSendOptions) => void
   /** 确认计划（计划卡「开始执行」） */
   confirmPlan: (plan?: PlanCard) => void
+  /** 人工步骤完成回执（计划卡「我已完成，下一步」，chat.send 带 planId + stepDoneId） */
+  completeStep: (plan?: PlanCard, stepId?: string) => void
   /** 展开「修改计划」输入框 */
   beginPlanRevision: (planId: string) => void
   /** 修改意见输入变化 */
@@ -300,10 +304,12 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     sessionReady,
     mode,
     plan,
+    handoff,
     ask,
     send,
     sendWith,
     confirmPlan,
+    completeStep,
     beginPlanRevision,
     updatePlanDraft,
     cancelPlanRevision,
@@ -376,6 +382,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     send,
     sendWith,
     confirmPlan,
+    completeStep,
     beginPlanRevision,
     updatePlanDraft,
     cancelPlanRevision,
@@ -384,6 +391,7 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     sendWithMode,
     mode,
     plan,
+    handoff,
     ask,
     cancel,
     reset,

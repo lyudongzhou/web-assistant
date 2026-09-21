@@ -136,7 +136,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     return lines.join('\n')
   }
 
-  buildAgentContext(session?: Pick<AgentSession, 'currentPage' | 'pageExposedKeys' | 'recentObservations' | 'modeDecision' | 'plan' | 'planTurn' | 'pendingQuestion'>): string {
+  buildAgentContext(session?: Pick<AgentSession, 'currentPage' | 'pageExposedKeys' | 'recentObservations' | 'modeDecision' | 'plan' | 'planTurn' | 'stepTurn' | 'pendingQuestion'>): string {
     const manifest = this.getManifest()
     const lines = ['你是一个网页助手，需要根据用户目标选择并操作页面。', '', '可用页面：']
     for (const page of manifest.pages) {
@@ -210,6 +210,8 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     lines.push('13. 一轮最多推进计划的 2~3 步：做完就调用 finish_turn 交接进度（done 填已完成的步骤 id），让用户能看到进展并决定是否继续。')
     lines.push('14. 步数快用完时（系统会提前一步提醒）优先调用 finish_turn 收尾，不要开启新的页面操作；整件事做完时用 doneAll=true。')
     lines.push('15. 用户对**当前计划**提修改意见时（见「本轮是计划修改」段）必须调用 revise_plan，并回填**修订后的完整步骤序列**：未改动的步骤原样带回它的 id 与标题（否则会被当成"删掉再加一个"，已完成状态与进度就丢了），新增的步骤不要带 id，要删除的步骤不要出现在 steps 里，改到已完成的步骤时对它传 reopen:true。**不要**因为一句修改意见就换一份新计划（那会清空进度）。')
+    lines.push('16. 计划里的每一步「你自己能不能做」由**页面事实**决定：能在「当前页可用方法」清单里找到对应方法 → 直接用 call_page_method 做完（**不要**交接）；动作是写后端的（保存 / 提交 / 删除 / 审批 / 导入导出）、清单里找不到对应方法、或需要人本身才能完成（扫码 / 验证码 / 短信确认 / 线下动作）→ 必须用 handoff_step 把这一步交回用户，instruction 写清"在哪个页面、点什么、做到什么算完成"（目标页不是当前页时先 render 过去）。**不要自己假设用户做完了**，也不要反复硬试；call_page_method 返回权限不足 / 校验失败时同样改用 handoff_step，不要换着参数重试。')
+    lines.push('17. 用户点过「我已完成，下一步」（见「用户已完成某个步骤」段）后必须**先校验再往下做**：读页面数据 / 调页面方法 / 重新打开页面看事实，不要凭"他说做完了"就往下一步走。校验**不通过**时**必须**用 handoff_step({ stepId, issue: { reason, expected } }) 把那一步**交回用户重做**（reason 写清哪里不对、expected 写清应该做成什么样）—— **不要**用 finish_turn 交接、也不要只在回复里说一句：那个步骤已经被标成 done 了，不用 issue 交回就会在计划里留下一条"已完成"的假记录，用户也看不到「需你重做」与重做按钮。校验通过再推进后面的步骤，并用 finish_turn 把这一步记进 done。')
 
     // 项目规则：随 manifest 下发（wc.pages.json 的 rules 自动收集），优先于上面的通用规则。
     const projectRules = this.getRules().filter((rule) => !rule.disabled)
@@ -254,15 +256,50 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     const plan = session?.plan
     if (plan && plan.status !== 'superseded') {
       const done = plan.steps.filter((step) => step.status === 'done')
+      const waiting = plan.steps.filter((step) => step.status === 'waiting-user')
+      const pending = plan.steps.filter((step) => step.status === 'pending')
       const version = plan.revision && plan.revision > 1 ? `；已修订 ${plan.revision - 1} 次（当前第 ${plan.revision} 版）` : ''
       lines.push('', `[当前计划 ${plan.id}] ${plan.summary}（状态：${plan.status}${version}）`)
       for (const step of plan.steps) {
-        lines.push(`  ${step.status === 'done' ? '[x]' : '[ ]'} ${step.id} ${step.title}${step.detail ? `（${step.detail}）` : ''}`)
+        // 三态：完成 / 已交给用户（等他在页面上做） / 待做。人工步骤必须一眼可辨 ——
+        // 否则模型会以为它在自己手里，顺手把进度填了或者又去尝试操作页面。
+        const mark = step.status === 'done' ? '[x]' : step.status === 'waiting-user' ? '[~]' : '[ ]'
+        const handoff =
+          step.status === 'waiting-user'
+            ? ' ← 已交给用户操作，等他在页面上完成后点「我已完成，下一步」（这一步不要你自己做）'
+            : ''
+        const issue = step.issue
+          ? `（上次没做成：${step.issue.reason}${step.issue.expected ? `；应该做成：${step.issue.expected}` : ''}）`
+          : ''
+        const instructions = step.status === 'waiting-user' && step.instructions ? `；给他的指引：${step.instructions}` : ''
+        lines.push(
+          `  ${mark} ${step.id} ${step.title}${step.detail ? `（${step.detail}）` : ''}${issue}${handoff}${instructions}`,
+        )
       }
       lines.push(
         done.length === plan.steps.length
           ? '  计划已全部完成。'
-          : `  已完成 ${done.length}/${plan.steps.length}；finish_turn 的 done 请填这些步骤 id：${plan.steps.filter((s) => s.status === 'pending').map((s) => s.id).join('、')}`,
+          : waiting.length
+            ? `  已完成 ${done.length}/${plan.steps.length}；${waiting.map((s) => s.id).join('、')} 正在等用户在页面上完成` +
+              '（不要用 finish_turn 把它标成 done，也不要替用户做写后端的动作）。'
+            : `  已完成 ${done.length}/${plan.steps.length}；finish_turn 的 done 请填这些步骤 id：${pending.map((s) => s.id).join('、')}`,
+      )
+    }
+
+    // 人工步骤回执（`chat.send.stepDoneId`）：用户刚说"我做完了"—— 立场必须是"先校验"，
+    // 否则模型最容易的做法是直接接着做下一步（那正是用户反馈的"操作错了也没人提示"）。
+    const stepTurn = session?.stepTurn
+    if (stepTurn) {
+      lines.push(
+        '',
+        `[用户已完成某个步骤] 用户在页面上完成了 ${stepTurn.stepId}「${stepTurn.title}」（他的原话：${stepTurn.text}）。`,
+      )
+      lines.push(
+        '  **先校验再继续**：读页面数据 / 调页面方法 / 重新打开该页看事实，不要凭"他说做完了"就往下一步走。' +
+          '校验**不通过** → **必须** handoff_step({ stepId, issue: { reason, expected } }) 交回用户重做：' +
+          '这一步已被标成 done，不用 issue 交回就会在计划里留下"已完成"的假记录，用户也看不到「需你重做」。' +
+          '**不要**用 finish_turn 交接、也不要只在回复里说一句。' +
+          '校验通过 → 继续后面的步骤，并用 finish_turn 把这一步记进 done。',
       )
     }
 

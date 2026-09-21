@@ -105,5 +105,115 @@ check(
   /panel-status[^>]*>[\s\S]*?正在按你的意见更新计划/.test(revisingFolded),
 )
 
+// 6) 人工步骤（add-plan-manual-steps）：等你操作的那一步必须"看得见、点得到"
+const handoffPlan = (steps, extra = {}) => ({
+  t: 'chat.plan',
+  planId: 'plan-1',
+  summary: '保存并核对订单',
+  createdAt: 1,
+  status: 'approved',
+  revision: 1,
+  steps,
+  ...extra,
+})
+const waitingStep = {
+  id: 'step-3',
+  title: '保存订单',
+  status: 'waiting-user',
+  owner: 'user',
+  instructions: '在订单页填好数量后点「保存」，看到状态变成已提交',
+}
+const handoff = await render(PlanCardView, {
+  plan: {
+    message: handoffPlan([
+      { id: 'step-1', title: '打开订单页', status: 'done' },
+      { id: 'step-2', title: '填好数量', status: 'pending' },
+      waitingStep,
+    ]),
+    status: 'approved',
+  },
+})
+check(
+  '等待中的步骤让面板自动展开（提示与按钮不能被折起来藏住）',
+  /<span class="chev"[^>]*>▾<\/span>/.test(handoff) && handoff.includes('panel-body') && handoff.includes('panel-footer'),
+)
+check(
+  '步骤行显示「需要你操作」+ 操作指引（在哪、点什么、做到什么算完成）',
+  handoff.includes('需要你操作') &&
+    handoff.includes('在订单页填好数量后点「保存」，看到状态变成已提交') &&
+    handoff.includes('waiting'),
+)
+check(
+  '折叠头与状态行都给出"轮到你了"的线索（折起来也知道该自己动手）',
+  handoff.includes('等你操作') && /panel-status[^>]*>[\s\S]*?等待你在页面上操作 · 第 3 步/.test(handoff),
+)
+check(
+  '主操作按钮变成「我已完成，下一步」（不再显示「开始执行」）',
+  handoff.includes('我已完成，下一步') && !handoff.includes('开始执行'),
+)
+
+// 7) 校验失败（issue）：红色提示 + 「我已重做，下一步」
+const rework = await render(PlanCardView, {
+  plan: {
+    message: handoffPlan([
+      { id: 'step-1', title: '打开订单页', status: 'done' },
+      {
+        ...waitingStep,
+        instructions: '再点一次「保存」',
+        issue: { reason: '订单仍是草稿', expected: '状态为已提交', at: 2 },
+      },
+    ]),
+    status: 'approved',
+  },
+})
+check(
+  '校验失败：显示「需你重做」+ 哪里不对 + 应该做成什么样，按钮变成「我已重做，下一步」',
+  rework.includes('需你重做') &&
+    rework.includes('没做成：订单仍是草稿') &&
+    rework.includes('应该做成：状态为已提交') &&
+    rework.includes('我已重做，下一步') &&
+    rework.includes('rework'),
+)
+
+// 8) 没有等待中的步骤时，执行中的计划卡照旧"收起 = 一行"（不因新逻辑变形）
+check(
+  '没有人工步骤时执行中仍收起成一行（且不渲染空的状态行）',
+  !approved.includes('panel-status') && !approved.includes('我已完成'),
+)
+
+// 9) 点了「我已完成」之后的反馈态（等校验）在状态行里可见
+const completing = await render(PlanCardView, {
+  plan: {
+    message: handoffPlan([
+      { id: 'step-1', title: '打开订单页', status: 'done' },
+      { id: 'step-2', title: '填好数量', status: 'pending' },
+      waitingStep,
+    ]),
+    status: 'approved',
+    completingStepId: 'step-3',
+  },
+})
+check(
+  '点击后进入"正在校验"反馈态（按钮禁用，状态行说明在做什么）',
+  /panel-status[^>]*>[\s\S]*?正在校验第 3 步/.test(completing) && completing.includes('disabled'),
+)
+// 服务端把该步标 done 后就会推新卡片 —— 此时"等待中的步骤"已不存在，文案不能退化成「第 0 步」
+const completingAfterServerCard = await render(PlanCardView, {
+  plan: {
+    message: handoffPlan([
+      { id: 'step-1', title: '打开订单页', status: 'done' },
+      { id: 'step-2', title: '填好数量', status: 'pending' },
+      { ...waitingStep, status: 'done', owner: 'user' },
+    ]),
+    status: 'approved',
+    completingStepId: 'step-3',
+  },
+})
+check(
+  '服务端已把该步标 done 时，校验文案仍指对步骤（不退化成「第 0 步」）',
+  /panel-status[^>]*>[\s\S]*?正在校验第 3 步/.test(completingAfterServerCard) &&
+    !completingAfterServerCard.includes('第 0 步'),
+)
+
 console.log(`\n${checks.every(Boolean) ? '✅ 全部通过' : '❌ 有未通过项'}（${checks.filter(Boolean).length}/${checks.length}）`)
 process.exit(checks.every(Boolean) ? 0 : 1)

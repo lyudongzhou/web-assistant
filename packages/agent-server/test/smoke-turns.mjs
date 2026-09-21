@@ -3,6 +3,7 @@
 // 前置：agent-server 已在本地起好（默认 3987，可用 WS_URL 覆盖），且 manifest 可读。
 // 用法：node test/smoke-turns.mjs
 //      SMOKE_EXPECT=revise node test/smoke-turns.mjs   ← 交互式计划修订（add-interactive-plan-revision）
+//      SMOKE_EXPECT=handoff node test/smoke-turns.mjs  ← 人工步骤与人机交接（add-plan-manual-steps）
 //
 // 覆盖四条验收：
 //   ① 复杂任务（plan 模式）→ chat.mode(plan) → propose_plan → chat.plan + chat.done(endedBy=propose_plan)
@@ -10,6 +11,9 @@
 //   ③ 全程不出现 chat.error（步数用尽只会是「已暂停」）
 //   ④ `SMOKE_EXPECT=revise`：不确认、先提修改意见（chat.send 带 revisePlanId）→ 要求
 //      **同一 planId** 回来、`revision === 2`、未改动的步骤 id 保持不变（进度不被清掉），再确认执行
+//   ⑤ `SMOKE_EXPECT=handoff`：执行到 agent 做不了的一步（写后端）→ handoff_step 交回用户
+//      （计划卡上该步 `waiting-user` + 指引）→ 脚本模拟用户点「我已完成，下一步」（chat.send 带
+//      `planId` + `stepDoneId`）→ 校验（可能带 issue 要求重做），全程无错
 import WebSocket from 'ws'
 
 const WS_URL = process.env.WS_URL || 'ws://localhost:3987/ws'
@@ -20,15 +24,26 @@ const MAX_ROUNDS = Number(process.env.SMOKE_ROUNDS || 3)
  * - `pause`：步数用尽只应「暂停」，不应报错
  * - `ask`：信息不足 → 问题卡 → 回答后续跑
  * - `revise`：计划 → **修改计划**（增量修订）→ 确认 → 执行
+ * - `handoff`：计划 → 确认 → 某一步交回用户 → **模拟用户点「我已完成，下一步」** → 校验并继续
  */
 const EXPECT = process.env.SMOKE_EXPECT || 'plan'
 /** 本轮模式（`plan` / `act` / `auto`） */
 const MODE = process.env.SMOKE_MODE || 'plan'
 const TASK =
   process.env.SMOKE_TASK ||
-  '帮我先打开数据源列表，然后逐个查看每个数据源的配置，最后汇总对比并给出结论'
+  (EXPECT === 'handoff'
+    ? // 交接档要用"写后端"的任务逼出人工步骤：demo 页的「新建 / 保存」不在可调用方法清单里，
+      // 按规则 16 模型只能 handoff_step 交回用户（而不是自己硬试）
+      '帮我打开数据源列表，然后新建一个数据源「订单库」并保存，最后确认它出现在列表里'
+    : '帮我先打开数据源列表，然后逐个查看每个数据源的配置，最后汇总对比并给出结论')
 /** 修订场景里用户写下的修改意见（会在下一轮作为 chat.send.text 发出） */
 const REVISE_TEXT = process.env.SMOKE_REVISE_TEXT || '第 2 步改成导出 CSV 对比，其余步骤保持不动'
+/**
+ * 交接档的"校验不通过"变体：假页面数据里**不含**用户新建的那条记录 ——
+ * 模型校验时会发现"没落库"，按规则 17 必须 `handoff_step({ issue })` 把该步交回重做。
+ * 用它验证 R3（纠错提示）与"不许静默往下走"。
+ */
+const HANDOFF_MISSING = process.env.SMOKE_HANDOFF_MISSING === '1'
 
 const ws = new WebSocket(WS_URL)
 const seen = []
@@ -42,10 +57,18 @@ let renders = 0
 /** 修订场景：首版计划 / 修订后的计划（用于断言"同一份计划被改了"） */
 let firstPlan = null
 let revisedPlan = null
+/** 交接档：是否出现过"等你操作"的步骤 / 是否已模拟用户点过按钮 / 用户步骤是否被推进 / 是否出现过 issue */
+let handoffSeen = false
+let stepDoneSent = false
+let userStepDone = false
+let stepIssue = null
+/** 交接档的重做路径：是否见过 `issue`（校验不通过被交回重做）/ 是否已模拟"我已重做"再点一次 */
+let reworkSeen = false
+let issueRetrySent = false
 
 function send(msg) {
   ws.send(JSON.stringify(msg))
-  console.log('→', msg.t, msg.planId ?? msg.revisePlanId ?? msg.questionId ?? msg.mode ?? '')
+  console.log('→', msg.t, msg.planId ?? msg.revisePlanId ?? msg.stepDoneId ?? msg.questionId ?? msg.mode ?? '')
 }
 
 function finish(code) {
@@ -77,6 +100,18 @@ function finish(code) {
     console.log('未改动的步骤 id 是否保留：', keptStepIds ? '是 ✅' : '否 ❌')
     if (revisedPlan) console.log('   ↳ 修订后步骤：', revisedPlan.steps.map((step) => `${step.id} ${step.title}`).join(' / '))
   }
+  // 交接档的断言：出现过"等你操作"的步骤 + 用户点过按钮 + 该步被服务端推进（或给出重做原因）
+  if (EXPECT === 'handoff') {
+    console.log('是否交接过人工步骤（waiting-user）：', handoffSeen ? '是 ✅' : '否 ❌')
+    console.log('是否模拟用户点过「我已完成，下一步」：', stepDoneSent ? '是 ✅' : '否 ❌')
+    console.log('用户步骤是否被推进为 done：', userStepDone ? '是 ✅' : '否')
+    console.log('是否出现「需重做」提示（issue）：', stepIssue ? `是（${stepIssue}）` : '否（本轮校验通过）')
+    console.log('结束方式是否为 handoff_step：', ended.includes('handoff_step') ? '是 ✅' : '否 ❌')
+    if (HANDOFF_MISSING) {
+      // 假页面数据里没有新建的那条 → 模型校验必须失败，并按规则 17 用 issue 把该步交回重做
+      console.log('（SMOKE_HANDOFF_MISSING=1）是否走了"需你重做"这条路径：', reworkSeen ? '是 ✅' : '否 ❌')
+    }
+  }
   const ok =
     EXPECT === 'pause'
       // 步数用尽档：不许有 chat.error，且必须给出「已暂停」（可继续）的可见提示
@@ -87,7 +122,16 @@ function finish(code) {
         : EXPECT === 'revise'
           // 修订档：同一份计划被增量改了（planId 不变、revision=2、步骤 id 保留），再确认执行
           ? errors.length === 0 && plans >= 2 && samePlanId && revisionAdvanced && keptStepIds && renders >= 1
-          : errors.length === 0 && plans >= 1 && renders >= 1 && !renderBeforePlan
+          : EXPECT === 'handoff'
+            // 交接档：发生了交接（waiting-user）→ 用户推进被接受（该步 done 或带回重做原因）→ 无错
+            // （`SMOKE_HANDOFF_MISSING=1` 时还要求真的走了"需你重做"这条路径）
+            ? errors.length === 0 &&
+              handoffSeen &&
+              stepDoneSent &&
+              ended.includes('handoff_step') &&
+              (userStepDone || !!stepIssue) &&
+              (!HANDOFF_MISSING || reworkSeen)
+            : errors.length === 0 && plans >= 1 && renders >= 1 && !renderBeforePlan
   const label =
     EXPECT === 'pause'
       ? '步数用尽降级为「已暂停」而非报错'
@@ -95,7 +139,9 @@ function finish(code) {
         ? '信息不足时弹出问题卡（ask_user 回合）'
         : EXPECT === 'revise'
           ? '计划修改是**增量修订**（同 planId / revision=2 / 步骤 id 保留）而非重新生成'
-          : '计划式回合跑通（计划 → 确认 → 执行），且无错误'
+          : EXPECT === 'handoff'
+            ? '人工步骤交回用户 → 用户点「我已完成，下一步」→ 服务端推进该步（或给出重做原因）'
+            : '计划式回合跑通（计划 → 确认 → 执行），且无错误'
   console.log(ok ? `✅ 通过：${label}` : '❌ 未通过：见上')
   process.exit(ok && code === 0 ? 0 : 1)
 }
@@ -139,7 +185,10 @@ ws.on('message', (data) => {
         t: 'page.data',
         page: currentTag,
         source: 'smoke',
-        data: { list: [{ id: 1, name: '订单库' }, { id: 2, name: '用户库' }] },
+        // `SMOKE_HANDOFF_MISSING=1`：故意**不含**新建的那条 —— 让模型校验时发现"没落库"（R3 的重做路径）
+        data: HANDOFF_MISSING
+          ? { list: [{ id: 2, name: '用户库' }] }
+          : { list: [{ id: 1, name: '订单库' }, { id: 2, name: '用户库' }] },
         truncated: false,
         at: Date.now(),
       })
@@ -153,7 +202,37 @@ ws.on('message', (data) => {
     return
   }
 
-  if (msg.t === 'chat.plan' && !approvedPlanId) {
+  if (msg.t === 'chat.plan') {
+    // 人工步骤（`handoff_step` 的产物）：计划卡上出现 `waiting-user` —— 模拟用户点「我已完成，下一步」。
+    // 只点一次（真实用户也只点一次）；该步被推进后会带着 `done` 回来，那是权威结果。
+    const waiting = msg.steps?.find((step) => step.status === 'waiting-user')
+    if (waiting) {
+      handoffSeen = true
+      if (waiting.issue) {
+        // 校验不通过 → 该步被 issue 交回重做：这是 R3 的落点（卡片上会显示"需你重做"+原因）
+        reworkSeen = true
+        stepIssue = waiting.issue.reason ?? '（有 issue）'
+        console.log(`   ↳ 需重做：${waiting.id} ${waiting.title}｜原因：${waiting.issue.reason}`)
+        // 只再点一次（避免与真模型无限来回），点完就不再交互
+        if (!issueRetrySent) {
+          issueRetrySent = true
+          send({ t: 'chat.send', text: `我已重做 ${waiting.id}`, planId: msg.planId, stepDoneId: waiting.id })
+        }
+        return
+      }
+      console.log(
+        `   ↳ 轮到用户操作：${waiting.id} ${waiting.title}｜指引：${waiting.instructions ?? '（无）'}`,
+      )
+      if (!stepDoneSent) {
+        stepDoneSent = true
+        send({ t: 'chat.send', text: `我已完成 ${waiting.id}`, planId: msg.planId, stepDoneId: waiting.id })
+      }
+      return
+    }
+    if (msg.steps?.some((step) => step.owner === 'user' && step.status === 'done')) userStepDone = true
+    // 只要服务端说这张卡还是"待确认"（proposed），脚本就点「开始执行」——
+    // 真实用户也会这么做（包括模型中途 re-plan 出来的新计划，不该被脚本晾着）。
+    if (msg.status === 'approved') return
     // 修订档：第一张计划卡不确认，先提修改意见（模拟计划卡上的「修改计划」+「提交修改」）；
     // 第二张（修订结果）才确认执行 —— 这样也能顺带验证"修订后门禁解锁"。
     if (EXPECT === 'revise' && !firstPlan) {

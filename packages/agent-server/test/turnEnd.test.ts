@@ -4,16 +4,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  applyHandoff,
   applyPlanProgress,
+  applyUserStepDone,
   buildPlan,
   buildQuestion,
+  describeHandoff,
   describePlanChanges,
   describePlanRevision,
   describeProgress,
+  describeStepLabel,
+  MAX_HANDOFF_INSTRUCTION,
   MAX_PLAN_STEPS,
   mergePlanRevision,
   normalizeAskArgs,
   normalizeFinishArgs,
+  normalizeHandoffArgs,
   normalizePlanArgs,
   normalizeReviseArgs,
   planCardStatus,
@@ -344,3 +350,249 @@ test('planCardStatus：已批准的计划卡片显示 approved；修订清掉 ap
   // 修订把 approvedAt 清掉（session.revisePlan 负责）→ 卡片与门禁同时回到"待确认"
   assert.equal(planCardStatus({ ...plan, status: 'proposed', approvedAt: undefined }), 'proposed')
 })
+
+// ───────────── 人工步骤：交接 / 用户推进 / 校验失败重做（add-plan-manual-steps）─────────────
+
+/** 已确认的计划（3 步，第 1 步已完成）—— 交接的典型场景 */
+function handedPlan(summary = '保存并核对订单'): ReturnType<typeof buildPlan> {
+  const plan = buildPlan({ summary, steps: ['打开订单页', '填好数量', '保存订单'] }, STAMP)
+  return {
+    ...plan,
+    status: 'approved',
+    approvedAt: 1,
+    steps: [
+      { id: 'step-1', title: '打开订单页', status: 'done' },
+      { id: 'step-2', title: '填好数量', status: 'pending' },
+      { id: 'step-3', title: '保存订单', status: 'pending' },
+    ],
+  }
+}
+
+test('normalizeHandoffArgs：合法的交接 → stepId + instruction（可带 issue）', () => {
+  const plan = handedPlan()
+  assert.deepEqual(
+    normalizeHandoffArgs({ stepId: ' step-3 ', instruction: ' 在订单页点「保存」，看到状态变成已提交 ' }, plan),
+    { stepId: 'step-3', instruction: '在订单页点「保存」，看到状态变成已提交' },
+  )
+  assert.deepEqual(
+    normalizeHandoffArgs(
+      { stepId: 'step-3', instruction: '改好后点保存', issue: { reason: '订单仍是草稿', expected: '状态为已提交' } },
+      plan,
+    ),
+    {
+      stepId: 'step-3',
+      instruction: '改好后点保存',
+      issue: { reason: '订单仍是草稿', expected: '状态为已提交' },
+    },
+  )
+})
+
+test('normalizeHandoffArgs：只给 expected 不给 reason 不算"校验失败"（当成普通交接）', () => {
+  const plan = handedPlan()
+  const got = normalizeHandoffArgs(
+    { stepId: 'step-3', instruction: '点保存', issue: { reason: '  ', expected: '已提交' } },
+    plan,
+  )
+  assert.equal(got.issue, undefined)
+})
+
+test('normalizeHandoffArgs：无计划 / 未确认 / 未知步骤 / 已完成步骤 / 空指引都抛错（模型自行修正）', () => {
+  const plan = handedPlan()
+  assert.throws(() => normalizeHandoffArgs({ stepId: 'step-3', instruction: '点保存' }, undefined), /没有可交接的计划/)
+  assert.throws(
+    () => normalizeHandoffArgs({ stepId: 'step-3', instruction: '点保存' }, { ...plan, status: 'superseded' }),
+    /没有可交接的计划/,
+  )
+  // 计划还没确认就交接 = 绕过"等用户确认再执行"的门禁
+  assert.throws(
+    () =>
+      normalizeHandoffArgs(
+        { stepId: 'step-3', instruction: '点保存' },
+        { ...plan, status: 'proposed', approvedAt: undefined },
+      ),
+    /还没被用户确认/,
+  )
+  assert.throws(() => normalizeHandoffArgs({ stepId: 'step-9', instruction: '点保存' }, plan), /不存在的步骤 id/)
+  assert.throws(() => normalizeHandoffArgs({ stepId: 'step-1', instruction: '点保存' }, plan), /已经完成/)
+  assert.throws(() => normalizeHandoffArgs({ stepId: '', instruction: '点保存' }, plan), /需要 stepId/)
+  // 空指引 = 用户只会收到"你去做一下"，必须拒绝
+  assert.throws(() => normalizeHandoffArgs({ stepId: 'step-3', instruction: '   ' }, plan), /需要 instruction/)
+})
+
+test('normalizeHandoffArgs：已完成（done）的步骤不带 issue 拒绝；带 issue 允许（校验失败退回重做）', () => {
+  const plan = handedPlan()
+  // step-1 已完成：普通交接没有意义
+  assert.throws(() => normalizeHandoffArgs({ stepId: 'step-1', instruction: '点保存' }, plan), /已经完成/)
+  // 但"校验发现用户那一步没做成"必须允许 —— 这是 R3 的唯一入口（实测：不允许就到不了纠错路径）
+  assert.deepEqual(
+    normalizeHandoffArgs(
+      { stepId: 'step-1', instruction: '再点一次保存', issue: { reason: '订单仍是草稿' } },
+      plan,
+    ),
+    { stepId: 'step-1', instruction: '再点一次保存', issue: { reason: '订单仍是草稿' } },
+  )
+  // 带 issue 把它退回 waiting-user：done → waiting-user + 原因
+  const back = applyHandoff(
+    plan,
+    normalizeHandoffArgs(
+      {
+        stepId: 'step-1',
+        instruction: '再点一次保存',
+        issue: { reason: '订单仍是草稿', expected: '已提交' },
+      },
+      plan,
+    ),
+    7,
+  )
+  assert.equal(back.steps[0].status, 'waiting-user')
+  assert.equal(back.steps[0].owner, 'user')
+  assert.deepEqual(back.steps[0].issue, { reason: '订单仍是草稿', expected: '已提交', at: 7 })
+})
+
+test('normalizeHandoffArgs：超长指引被截断（不值得为长度失败一整轮）', () => {
+  const plan = handedPlan()
+  const got = normalizeHandoffArgs({ stepId: 'step-3', instruction: 'x'.repeat(400) }, plan)
+  assert.equal(got.instruction.length, MAX_HANDOFF_INSTRUCTION)
+})
+
+
+test('applyHandoff：目标步 waiting-user + owner/instructions；其它等待中的步骤收回 pending', () => {
+  const plan = handedPlan()
+  const first = applyHandoff(plan, { stepId: 'step-2', instruction: '填好数量' }, 100)
+  assert.equal(first.steps[1].status, 'waiting-user')
+  assert.equal(first.steps[1].owner, 'user')
+  assert.equal(first.steps[1].instructions, '填好数量')
+  assert.equal(first.steps[1].issue, undefined)
+
+  // 再交接另一步 → 同一时刻只有一个"等你"
+  const second = applyHandoff(first, { stepId: 'step-3', instruction: '点保存' }, 200)
+  assert.equal(second.steps[1].status, 'pending')
+  assert.equal(second.steps[2].status, 'waiting-user')
+  assert.equal(second.steps.filter((step) => step.status === 'waiting-user').length, 1)
+  // 不改安装前提（id / 步骤数）
+  assert.equal(second.id, plan.id)
+  assert.equal(second.steps.length, plan.steps.length)
+})
+
+test('applyHandoff：带 issue → 写入原因与期望；不带 issue 会清掉旧 issue', () => {
+  const plan = handedPlan()
+  const failed = applyHandoff(
+    plan,
+    { stepId: 'step-3', instruction: '再点一次保存', issue: { reason: '订单仍是草稿', expected: '状态已提交' } },
+    300,
+  )
+  assert.deepEqual(failed.steps[2].issue, { reason: '订单仍是草稿', expected: '状态已提交', at: 300 })
+
+  const again = applyHandoff(failed, { stepId: 'step-3', instruction: '再点一次保存' }, 400)
+  assert.equal(again.steps[2].issue, undefined)
+  assert.equal(again.steps[2].status, 'waiting-user')
+})
+
+test('applyUserStepDone：只认 waiting-user 的步骤；推进后 done 且清 issue', () => {
+  const plan = handedPlan()
+  const waiting = applyHandoff(
+    plan,
+    { stepId: 'step-3', instruction: '点保存', issue: { reason: '仍是草稿' } },
+    1,
+  )
+  const result = applyUserStepDone(waiting, 'step-3')
+  assert.equal(result?.step.status, 'done')
+  assert.equal(result?.step.issue, undefined)
+  assert.equal(result?.plan.steps[2].status, 'done')
+  assert.equal(result?.plan.steps[2].instructions, '点保存') // 指引留着（历史可见）
+  // 不是等待中的步骤（pending / 已推进 / 不存在）一律返回 undefined
+  assert.equal(applyUserStepDone(plan, 'step-2'), undefined)
+  assert.equal(applyUserStepDone(result!.plan, 'step-3'), undefined)
+  assert.equal(applyUserStepDone(plan, 'step-9'), undefined)
+})
+
+
+test('describeStepLabel / describeHandoff：正常交接与"没做成"两套文案都说清下一步动作', () => {
+  const plan = handedPlan()
+  const waiting = applyHandoff(plan, { stepId: 'step-3', instruction: '在订单页点「保存」' }, 1)
+  const step = waiting.steps[2]
+  assert.equal(describeStepLabel(waiting, step), '第 3 步「保存订单」')
+  const ok = describeHandoff(waiting, step)
+  assert.match(ok, /第 3 步「保存订单」需要你在页面上操作：在订单页点「保存」/)
+  assert.match(ok, /做完后点「我已完成，下一步」/)
+
+  const failed = applyHandoff(
+    waiting,
+    { stepId: 'step-3', instruction: '再点一次保存', issue: { reason: '订单仍是草稿', expected: '状态为已提交' } },
+    2,
+  )
+  const text = describeHandoff(failed, failed.steps[2])
+  assert.match(text, /看起来没做成：订单仍是草稿；应该做成：状态为已提交/)
+  assert.match(text, /点「我已重做，下一步」/)
+})
+
+test('projectTurnEnd(handoff_step)：同 planId 的卡片（该步 waiting-user）+ 一条提示；抑制兜底文本', () => {
+  const plan = handedPlan()
+  const waiting = applyHandoff(plan, { stepId: 'step-3', instruction: '在订单页点「保存」' }, 1)
+  const projection = projectTurnEnd({
+    tool: 'handoff_step',
+    handoff: { plan: waiting, step: waiting.steps[2] },
+  })
+  assert.equal(projection.endedBy, 'handoff_step')
+  assert.equal(projection.suppressFallbackText, true)
+  const card = projection.messages[0]
+  assert.equal(card.t, 'chat.plan')
+  if (card.t === 'chat.plan') {
+    assert.equal(card.planId, plan.id) // 交接不改 planId
+    assert.equal(card.status, 'approved')
+    assert.equal(card.steps[2].status, 'waiting-user')
+    assert.equal(card.steps[2].instructions, '在订单页点「保存」')
+  }
+  const text = projection.messages[1]
+  assert.equal(text.t, 'chat.text')
+  if (text.t === 'chat.text') assert.match(text.delta, /我已完成，下一步/)
+  // 缺产物 = 调用方 bug，不该推进一张空卡
+  assert.throws(() => projectTurnEnd({ tool: 'handoff_step' }), /需要 handoff/)
+})
+
+test('applyPlanProgress：不能替用户勾掉 waiting-user 的步骤（done 填了也不算、doneAll 也不行）', () => {
+  const plan = handedPlan()
+  const waiting = applyHandoff(plan, { stepId: 'step-3', instruction: '点保存' }, 1)
+
+  const byDone = applyPlanProgress(waiting, { done: ['step-2', 'step-3'], doneAll: false }, 10)
+  assert.equal(byDone?.steps[2].status, 'waiting-user') // 模型填进 done 不生效
+  assert.equal(byDone?.steps[1].status, 'done') // 其它步骤照常推进
+
+  const byAll = applyPlanProgress(byDone, { done: [], doneAll: true }, 20)
+  assert.equal(byAll?.steps[2].status, 'waiting-user')
+  assert.equal(byAll?.status, 'approved') // 还有等待中的步骤 → 计划不能 completed
+  assert.equal(byAll?.completedAt, undefined)
+
+  // 用户推进之后，doneAll 才能真正收尾
+  const advanced = applyUserStepDone(byAll!, 'step-3')!
+  const finished = applyPlanProgress(advanced.plan, { done: [], doneAll: true }, 30)
+  assert.equal(finished?.status, 'completed')
+  assert.equal(finished?.completedAt, 30)
+})
+
+test('mergePlanRevision：命中等待中的步骤保留 owner / instructions / issue；reopen 才清 issue', () => {
+  const plan = handedPlan()
+  const waiting = applyHandoff(
+    plan,
+    { stepId: 'step-3', instruction: '点保存', issue: { reason: '仍是草稿', expected: '已提交' } },
+    1,
+  )
+  const kept = mergePlanRevision(
+    waiting,
+    { summary: plan.summary, steps: [{ id: 'step-3', title: '保存订单（改标题）', reopen: false }] },
+    5,
+  )
+  assert.equal(kept.plan.steps[0].status, 'waiting-user')
+  assert.equal(kept.plan.steps[0].owner, 'user')
+  assert.equal(kept.plan.steps[0].instructions, '点保存')
+  assert.equal(kept.plan.steps[0].issue?.reason, '仍是草稿')
+
+  const reopened = mergePlanRevision(
+    waiting,
+    { summary: plan.summary, steps: [{ id: 'step-3', title: '保存订单', reopen: true }] },
+    6,
+  )
+  assert.equal(reopened.plan.steps[0].status, 'pending')
+  assert.equal(reopened.plan.steps[0].issue, undefined)
+})
+

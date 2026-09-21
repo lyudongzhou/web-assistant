@@ -219,3 +219,98 @@ test('buildAgentContext：规则 15 常驻（"改计划必须用 revise_plan，�
   assert.match(prompt, /必须调用 revise_plan/)
   assert.match(prompt, /不要\*\*因为一句修改意见就换一份新计划/)
 })
+
+// ───────── 人工步骤（add-plan-manual-steps）：判据规则 + 计划段三态 + 回执段 ─────────
+
+test('buildAgentContext：规则 16/17 常驻（判据 + 先校验再继续）', async () => {
+  const svc = await makeService()
+  const prompt = svc.buildAgentContext()
+  // 规则 16：能不能自己做由页面事实决定；写后端/需人的动作必须交接
+  assert.match(prompt, /16\. 计划里的每一步「你自己能不能做」由\*\*页面事实\*\*决定/)
+  assert.match(prompt, /必须用 handoff_step 把这一步交回用户/)
+  assert.match(prompt, /不要自己假设用户做完了/)
+  // 规则 17：用户说做完了要先校验；校验不通过**必须**用 issue 交回重做（不许用 finish_turn 糊过去）
+  assert.match(prompt, /17\. 用户点过「我已完成，下一步」/)
+  assert.match(prompt, /先校验再往下做/)
+  assert.match(prompt, /必须\*\*用 handoff_step\(\{ stepId, issue: \{ reason, expected \} \}\) 把那一步\*\*交回用户重做/)
+  assert.match(prompt, /不要\*\*用 finish_turn 交接/)
+})
+
+test('buildAgentContext：计划段把"已交给用户"的步骤标出来（带指引 + 上次没做成的原因）', async () => {
+  const svc = await makeService()
+  const plan = {
+    id: 'plan-9',
+    summary: '保存并核对订单',
+    steps: [
+      { id: 'step-1', title: '打开订单页', status: 'done' as const },
+      { id: 'step-2', title: '填好数量', status: 'pending' as const },
+      {
+        id: 'step-3',
+        title: '保存订单',
+        status: 'waiting-user' as const,
+        owner: 'user' as const,
+        instructions: '在订单页点「保存」，看到状态变成已提交',
+        issue: { reason: '订单仍是草稿', expected: '状态为已提交', at: 1 },
+      },
+    ],
+    status: 'approved' as const,
+    createdAt: 1,
+    revision: 1,
+    approvedAt: 2,
+  }
+
+  const prompt = svc.buildAgentContext({ plan })
+  assert.match(prompt, /\[~\] step-3 保存订单/)
+  assert.match(prompt, /已交给用户操作，等他在页面上完成后点「我已完成，下一步」/)
+  assert.match(prompt, /给他的指引：在订单页点「保存」，看到状态变成已提交/)
+  assert.match(prompt, /上次没做成：订单仍是草稿；应该做成：状态为已提交/)
+  // 等待中的步骤不能被 finish_turn 勾掉 —— 提示里必须划清这条边界
+  assert.match(prompt, /正在等用户在页面上完成（不要用 finish_turn 把它标成 done/)
+  // 也不该把它列进"done 请填这些步骤 id"（那会让模型以为可以自己勾）
+  assert.doesNotMatch(prompt, /done 请填这些步骤 id：step-3/)
+})
+
+test('buildAgentContext：doneAll 提示不误导（还有等待中的步骤时不列 pending id 清单）', async () => {
+  const svc = await makeService()
+  const plan = {
+    id: 'plan-10',
+    summary: '保存订单',
+    steps: [
+      { id: 'step-1', title: '打开订单页', status: 'done' as const },
+      { id: 'step-2', title: '保存订单', status: 'waiting-user' as const, owner: 'user' as const, instructions: '点保存' },
+    ],
+    status: 'approved' as const,
+    createdAt: 1,
+    approvedAt: 2,
+  }
+  const prompt = svc.buildAgentContext({ plan })
+  assert.match(prompt, /已完成 1\/2；step-2 正在等用户在页面上完成/)
+})
+
+test('buildAgentContext：人工步骤回执注入「用户已完成某个步骤」并要求先校验', async () => {
+  const svc = await makeService()
+  const plan = {
+    id: 'plan-11',
+    summary: '保存并核对订单',
+    steps: [
+      { id: 'step-3', title: '保存订单', status: 'done' as const, owner: 'user' as const, instructions: '点保存' },
+    ],
+    status: 'approved' as const,
+    createdAt: 1,
+    approvedAt: 2,
+  }
+
+  // 没有回执时不该出现这一段
+  assert.doesNotMatch(svc.buildAgentContext({ plan }), /\[用户已完成某个步骤\]/)
+
+  const prompt = svc.buildAgentContext({
+    plan,
+    stepTurn: { kind: 'step-done', stepId: 'step-3', title: '保存订单', text: '我已完成第 3 步', at: 3 },
+  })
+  assert.match(prompt, /\[用户已完成某个步骤\] 用户在页面上完成了 step-3「保存订单」/)
+  assert.match(prompt, /他的原话：我已完成第 3 步/)
+  assert.match(prompt, /\*\*先校验再继续\*\*/)
+  assert.match(prompt, /必须\*\* handoff_step\(\{ stepId, issue: \{ reason, expected \} \}\) 交回用户重做/)
+  assert.match(prompt, /留下"已完成"的假记录/)
+})
+

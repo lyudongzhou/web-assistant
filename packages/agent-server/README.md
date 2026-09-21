@@ -222,6 +222,14 @@ SMOKE_MODE=plan node test/smoke-turns.mjs
 # 断言「同一 planId + revision=2 + 未改动的步骤 id 保留」（改计划 ≠ 换计划），再确认执行
 SMOKE_EXPECT=revise SMOKE_MODE=plan node test/smoke-turns.mjs
 
+# 人工步骤（人机交接）：用"新建数据源并保存"逼出 agent 做不了的一步 →
+# 断言「计划卡出现 waiting-user + endedBy=handoff_step + 脚本模拟用户点「我已完成，下一步」被接受」
+SMOKE_EXPECT=handoff SMOKE_MODE=plan node test/smoke-turns.mjs
+
+# 纠错路径（校验不通过 → 需你重做）：假页面数据里**没有**新建的那条 →
+# 模型校验必然失败，须用 handoff_step(issue) 把该步交回重做，脚本还会再模拟一次「我已重做」
+SMOKE_EXPECT=handoff SMOKE_HANDOFF_MISSING=1 SMOKE_MODE=plan node test/smoke-turns.mjs
+
 # 步数用尽：把上限压到 1 步，验证「降级为已暂停」而不是 chat.error
 #（服务端需以 MAX_AGENT_STEPS=1 启动）
 SMOKE_EXPECT=pause SMOKE_MODE=act SMOKE_ROUNDS=1 \
@@ -229,7 +237,7 @@ SMOKE_EXPECT=pause SMOKE_MODE=act SMOKE_ROUNDS=1 \
 ```
 
 可调环境变量：`WS_URL` / `SMOKE_ROUNDS`（跑几轮后收尾）/ `SMOKE_MODE`（`plan` / `act` / `auto`）/
-`SMOKE_TASK` / `SMOKE_EXPECT`（`plan` / `pause` / `ask` / `revise`）/ `SMOKE_REVISE_TEXT`（修订档写下的修改意见）。
+`SMOKE_TASK` / `SMOKE_EXPECT`（`plan` / `pause` / `ask` / `revise` / `handoff`）/ `SMOKE_REVISE_TEXT`（修订档写下的修改意见）。
 
 ### 健康检查
 

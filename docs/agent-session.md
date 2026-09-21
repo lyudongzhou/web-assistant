@@ -102,8 +102,9 @@ type ClientMessage =
   //   mode     本轮模式请求值（auto / act / plan）；缺省沿用会话模式
   //   planId   确认某个计划（计划卡「开始执行」）
   //   revisePlanId 对某个计划提修改意见（计划卡「修改计划」+「提交修改」）—— 见 §4.7
+  //   stepDoneId 人工步骤完成回执（计划卡「我已完成，下一步」，值 = 被推进的 step id）—— 见 §4.8
   //   questionId 回答某个提问（问题卡选项）
-  | { t: 'chat.send'; text: string; mode?: AgentMode; planId?: string; revisePlanId?: string; questionId?: string }
+  | { t: 'chat.send'; text: string; mode?: AgentMode; planId?: string; revisePlanId?: string; stepDoneId?: string; questionId?: string }
   | { t: 'chat.cancel' }                                          // 用户打断 agent
   | { t: 'tool.result'; id: string; ok: true; data: unknown }
   | { t: 'tool.result'; id: string; ok: false; error: string; timedOut?: boolean }
@@ -122,7 +123,10 @@ type ServerMessage =
       decidedBy: 'user' | 'heuristic' | 'model'; reason?: string }
   | { t: 'chat.plan'; planId: string; summary: string; steps: PlanStep[]; createdAt: number
       // status 是**服务端权威**的卡片状态（修订会让已批准的计划回到 'proposed'）；
-      // revision 首版为 1，每次 revise_plan +1；note 是变更摘要（如「修改 1 步（导出 CSV）」）
+      // revision 首版为 1，每次 revise_plan +1；note 是变更摘要（如「修改 1 步（导出 CSV）」）；
+      // steps 里的 PlanStep.status 三态：pending / **waiting-user（轮到你操作，见 §4.8）** / done，
+      // 人工步骤还带 owner:'user' / instructions（操作指引）/ issue（上次没做成的原因）——
+      // handoff_step 与「我已完成，下一步」都只更新这张卡（planId 不变），客户端无需新增字段
       status: 'proposed' | 'approved'; revision?: number; revisedAt?: number; note?: string }
   | { t: 'chat.ask'; questionId: string; question: string; options: string[]; askedAt: number }
   // 流式文本：channel 区分「结果正文」与「模型思考」（缺省 'text'）
@@ -140,8 +144,9 @@ type ServerMessage =
   | { t: 'pong' }
 
 type ToolName = 'render' | 'wait_for_observation' | 'call_page_method'
-              | 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'   // 后四个是服务端收尾工具（不走 tool.call）
-type TurnEndToolName = 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'
+              | 'propose_plan' | 'revise_plan' | 'handoff_step' | 'ask_user' | 'finish_turn'
+                                        // ↑ 后五个是服务端收尾工具（不走 tool.call）；handoff_step 见 §4.8
+type TurnEndToolName = 'propose_plan' | 'revise_plan' | 'handoff_step' | 'ask_user' | 'finish_turn'
 type AgentMode = 'auto' | 'act' | 'plan'
 
 /**
@@ -279,7 +284,7 @@ tool-result 通道与**那次** tool 调用一一对应，模型无需识别 id�
 
 两条修正：
 
-1. **收尾工具**（`lifecycle.completesRun`）：`propose_plan` / `ask_user` / `finish_turn`
+1. **收尾工具**（`lifecycle.completesRun`）：`propose_plan` / `revise_plan` / `handoff_step` / `ask_user` / `finish_turn`
    被调用即让本轮 run 以 `completed` 收尾（不是失败）。再加上 `hooks.beforeModel` 在**倒数一步**
    注入收尾提醒、以及把 `exceeded maxIterations` 降级成「已暂停」（`chat.done` + 一句提示），
    用户再也不会看到"步数用尽 = 红色错误"。
@@ -297,6 +302,10 @@ chat.send(mode) ──┬─ act ──► render/call_page_method ──► fin
                                    │
                         缺信息？ask_user ──► completed + chat.ask（waiting-user）
                                    │  选项 / 直接打字 → chat.send(questionId) → 下一轮
+                                   │
+                        这步我做不了？handoff_step ──► completed + chat.plan（waiting-user，见 §4.8）
+                                   │  ├─「我已完成，下一步」→ chat.send(planId + stepDoneId) → 先校验再继续
+                                   │  └─ 校验没过 → handoff_step(issue) → 同一步回到「需你重做」
 ```
 
 - **模式**（`AgentMode`）：`act` 直接执行 / `plan` 先出计划 / `auto` 由服务端判定
@@ -364,6 +373,82 @@ revise_plan({ note?, summary?, steps: [{ id?, title, detail?, reopen? }] })
 
 **验收**（真调模型）：`SMOKE_EXPECT=revise SMOKE_MODE=plan node test/smoke-turns.mjs` ——
 要求「同一 `planId` + `revision === 2` + 未改动的步骤 id 保留」，且修订后仍可确认执行。
+
+### 4.8 人工步骤与人机交接（`add-plan-manual-steps`）
+
+**改的问题**：页面上有一部分功能 agent 本来就做不了 —— 写后端的动作（保存 / 提交 / 删除 / 审批）、
+不在能力清单里的操作、需要**人本身**才能完成的（扫码 / 验证码 / 短信确认）、以及 `call_page_method`
+被拒（权限不足 / 校验失败）。以前这类步骤只有 prompt 规则 8 的一句"必须请用户在页面上确认提交"：
+
+- **计划卡上看不出"现在轮到你了"**（步骤只有 `pending` / `done` 两种标记，提示只飘在对话流里）；
+- **没有"交回控制权"的推进口**（`ask_user` 的语义是"问你一个信息"，不是"请你去页面上做件事"）；
+- **进度是模型自报的** ⇒ 模型可以把人工步骤直接填进 `finish_turn.done` 然后接着往下走；
+- 后续步骤发现用户没做对时，只能含糊说一句 —— 步骤上没有"没做成 / 需重做"这个态。
+
+**现在**：把"这一步得你在页面上手做"做成一条有提示、有按钮、有校验的路径。
+**判定权在 agent，判据是页面事实**（不是计划里预先声明，也不是感觉）：
+
+| 判据（规则 16 写进 prompt） | 结论 |
+|---|---|
+| 动作能在「当前页可用方法」清单里找到（`manifest.exposes` / 运行时 `page.exposed`） | agent 自己 `call_page_method` 做完，**不交接** |
+| 写后端的动作（保存 / 提交 / 删除 / 审批）或清单里没有对应方法 | 必须 `handoff_step` 交回用户 |
+| 需要人本身才能完成（扫码 / 验证码 / 线下动作） | 同上 |
+| `call_page_method` 返回权限不足 / 校验失败 | 不要反复试，改为交接 |
+
+```ts
+// 1) 执行到那一步 → 收尾工具 handoff_step（completesRun）
+handoff_step({ stepId: 'step-3', instruction: '在订单页填好数量后点「保存」，看到状态变成已提交' })
+//    （目标页不是当前页时先 render 过去；计划必须已由用户确认，未确认时调用被拒）
+//    带 issue 时是第二种用法：校验发现用户上次没做对 → 请他在页面上重做
+//    （**即使用户已经点过「我已完成」、该步已是 done 也允许** —— 这是纠错的唯一通道；
+//      不带 issue 去交接一个已完成的步骤会被拒）
+handoff_step({ stepId: 'step-3', instruction: '再点一次「保存」',
+               issue: { reason: '订单仍是草稿', expected: '状态为已提交' } })
+//    → 该步 status='waiting-user' + owner='user' + instructions（+ issue），
+//      **其它等待中的步骤收回 pending**（至多一个步骤在等你）
+//    → 本轮 endedBy='handoff_step'、run status='waiting-user'
+//    → 推 chat.plan（同 planId，该步 waiting-user）+ 一条 chat.text（指引 / 哪里没做成 + 点哪里继续）
+//
+// 2) 用户在页面上做完 → 点计划卡上的「我已完成，下一步」
+{ t: 'chat.send', text: '我已完成第 3 步「保存订单」', planId: '<当前 planId>', stepDoneId: 'step-3' }
+//    → 服务端把该步标 done 并清 issue（**只能由这个动作推进**），立刻回推一张权威卡片，
+//      并把「用户刚完成这一步」写成本轮意图（session.stepTurn）
+//    → 起下一轮：prompt 注入 [用户已完成某个步骤] + 规则 17「先校验再继续」
+//
+// 3) 校验（读页面数据 / 调页面方法 / 重新打开该页看事实）
+//    通过 → 继续后面的步骤（finish_turn 把这一步记进 done）
+//    没做成 → 回到第 1 步的 issue 形态：卡片上该步变「需你重做」+ 原因，按钮变「我已重做，下一步」
+```
+
+**三条关键取舍**：
+
+- **"不许自己假设用户做完了"是服务端保证**：`applyPlanProgress` 里 `waiting-user` 的步骤不参与
+  `finish_turn.done` / `doneAll` 的勾选，计划也不会因此在仍有等待中的步骤时变成 `completed` ——
+  光靠 prompt 一定会被"我觉得用户已经做完了"绕过。
+- **计划期不预先声明谁做哪一步**：某一步是否需要用户手做取决于**执行到那一步时页面实际能给什么能力**
+  （同一个"保存"按钮，有的页面 `expose` 了、有的没有），所以 `owner` 只由运行期 `handoff_step` 写入。
+- **客户端只跟随服务端 `steps`**：本地只有 `completingStepId` 这个"刚点完、等校验"的反馈态，
+  步骤的 `done` 一律由 `chat.plan` 下发（`waiting-user` 的进出有交接与推进两个来源，本地推断必然漂移）。
+
+**两种"等你"要分清**（都落在 run status `waiting-user`，靠 `endedBy` 与卡片区分）：
+
+| | 触发 | 用户看到的 | 用户怎么继续 |
+|---|---|---|---|
+| 澄清提问 | `ask_user` | 问题卡（2~5 个选项） | 点选项 / 直接打字（`questionId`） |
+| 人工步骤 | `handoff_step` | 计划卡上该步「需要你操作」+ 指引（+「需你重做」+ 原因） | 在页面上做完后点「我已完成 / 我已重做，下一步」（`stepDoneId`） |
+
+**客户端**：计划卡步骤行三态（`describeStepStatus`：done / ⏳ 需要你操作 / ! 需你重做）、
+**有步骤在等你时面板强制展开**（提示与按钮不能被折起来藏住，收起态另由「等你操作」徽标与状态行兜底）、
+主按钮换成「我已完成，下一步」（带 `issue` 时「我已重做，下一步」）；
+状态机在 `lib/turnState.ts`（`handoffStep` / `beginStepCompletion` / `settleStepCompletion`，纯函数可单测）；
+`useAgentChat.completeStep(plan, stepId)` → `chat.send({ planId, stepDoneId })`（`handoff` computed 供自写 UI 复用）。
+刷新 / 重连即新会话，等待态随之消失（与"会话 = 连接"一致）。
+
+**验收**（真调模型）：`SMOKE_EXPECT=handoff node test/smoke-turns.mjs` —— 任务用"新建数据源并保存"
+逼出人工步骤，要求「出现 `waiting-user` + `endedBy === 'handoff_step'` + 用户推进被接受
+（该步 `done` 或带回 `issue` 让重做）+ 全程无 `chat.error`」。自动化覆盖见
+`agent-server/test/{turnEnd,session.handoff,manifest.service}.test.ts` 与
+`chat-client/test/{turnState.test.mjs,render-panel.mjs}`。
 
 ## 5. 【待拍板 D1】render 与“等数据”是一个 RPC 还是两个
 

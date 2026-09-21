@@ -125,8 +125,9 @@
 - [x] 回合边界统一：计划确认 / 澄清提问 / 进度交接 → `session.plan` / `session.pendingQuestion` + `chat.plan` / `chat.ask`，用户回应走 `chat.send(planId / questionId)`。
 - [x] prompt 注入：本轮模式与门禁状态、当前计划与进度、上一个提问与回答 + 规则 10~14。
 - [x] chat-client：`PlanCard` / `AskCard` / `ModeSwitch` + `lib/turnState.ts`（纯函数状态机）+ 两条渲染面接线。
-- [ ] 后续（若需要）：服务端**自动接力**（`AUTO_CONTINUE_MAX_TURNS`：run 结束自动起下一轮）；`MODE_CLASSIFIER=llm` 的判定层 4。
 - [x] 计划的**在线编辑**（2026-09 补上，`add-interactive-plan-revision`）：计划卡「修改计划」→ `chat.send(revisePlanId)` → `revise_plan` 按 step id **增量合并**（`planId` 不变、`revision+1`、进度不丢），修订轮硬拦 `propose_plan`；改完重新确认（清 `approvedAt`）；「重新生成计划」保留全量重来。
+- [x] 计划里的**人工步骤**（2026-09 补上，`add-plan-manual-steps`）：agent 做不了的一步（写后端 / 清单里没有对应方法 / 需要人本身 / `call_page_method` 被拒）→ 收尾工具 `handoff_step` 交回用户（该步 `waiting-user` + `instructions` 指引，至多一个步骤在等你）→ 用户在页面上做完点计划卡「我已完成，下一步」（`chat.send(planId + stepDoneId)`）→ 服务端标 `done` 并起一轮，模型**先校验**再继续；没做成就 `handoff_step(issue)` 让该步回「需你重做」（带原因/期望）。服务端保证：`waiting-user` 的步骤不接受 `finish_turn.done` / `doneAll` 勾选。判定权在 agent（规则 16/17），不在计划里预先声明谁做哪一步。
+- [ ] 后续（若需要）：服务端**自动接力**（`AUTO_CONTINUE_MAX_TURNS`：run 结束自动起下一轮）；`MODE_CLASSIFIER=llm` 的判定层 4；宿主页面上的**视觉引导**（高亮目标控件 / 浮层指引 —— 本次只做到"面板内提示 + 指引文本 + 必要时先 render 到目标页"）；提示词的**逐步审批**模式（每步都等用户点确认）。
 
 ## 5. 数据上报（原「Runtime 透明观察」—— 已改向）
 目录：`/Users/lvdongzhou/codePersonal/webassistant/packages/wc-runtime-core/`

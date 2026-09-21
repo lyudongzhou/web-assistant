@@ -52,6 +52,7 @@
       @cancel-revision="emit('revision-cancel')"
       @revise="emit('revise')"
       @replan="emit('replan')"
+      @step-done="emit('step-done', $event)"
     />
     <AskCardView v-if="ask" :ask="ask" :disabled="loading" @answer="onAnswer" />
 
@@ -152,6 +153,8 @@ const emit = defineEmits<{
   revise: []
   /** 计划卡「重新生成计划」：推倒重来（宿主发一句话让模型重新 propose_plan） */
   replan: []
+  /** 计划卡「我已完成，下一步」（人工步骤）：宿主转成 `completeStep(plan, stepId)` */
+  'step-done': [stepId: string]
   /** 问题卡选项被点：宿主把它转成一次带 questionId 的发送 */
   answer: [text: string, questionId: string]
   /** 模式切换（宿主把它记下来，下一轮随 send 带上） */

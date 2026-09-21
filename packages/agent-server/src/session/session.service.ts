@@ -10,8 +10,12 @@ import type {
   ObservationMatch,
   PendingQuestion,
   PlanTurn,
+  StepTurn,
 } from '@webassistant/protocol'
 import { MemorySessionStore, type SessionStore } from './session.store.js'
+// 纯函数复用：`turnEnd.ts` 零依赖（只 import protocol 类型），不会与 agent.service 形成环，
+// 而"用户推进等待中的步骤"这条规则必须与 `handoff_step` 的写入规则放在同一处（一写一读，口径不能漂）。
+import { applyUserStepDone } from '../agent/turnEnd.js'
 
 /**
  * 僵尸会话兜底回收窗口（仅异常路径）。
@@ -196,6 +200,45 @@ export class SessionService implements OnModuleDestroy {
   setPlanTurn(session: AgentSession, turn: PlanTurn | undefined): void {
     if (turn) session.planTurn = turn
     else delete session.planTurn
+    this.touch(session)
+  }
+
+  // ---- 人工步骤（本轮，`chat.send.stepDoneId`）----
+
+  /**
+   * 用户点「我已完成，下一步」：把**等待中的那一步**标 `done` 并清 `issue`。
+   *
+   * 为什么是服务端权威：`waiting-user` 的步骤不接受模型自报进度（`applyPlanProgress` 会跳过它），
+   * 用户这个动作是它唯一的推进口 —— 判据与方法都放在这里，调用方（gateway）只负责把结果变成给用户看的话。
+   *
+   * 四种结果（都不阻断本轮照常起跑，否则客户端会卡在 loading）：
+   * - `done`：推进成功；
+   * - `stale`：客户端拿的 planId 与会话当前计划不一致（过期卡片）；
+   * - `mismatch`：stepId 指向的步骤当前不在等用户（已推进过 / 已被交接成了另一步）；
+   * - `none`：当前没有计划。
+   */
+  completeUserStep(
+    session: AgentSession,
+    planId: string | undefined,
+    stepId: string,
+  ): 'done' | 'stale' | 'mismatch' | 'none' {
+    const plan = session.plan
+    if (!plan) return 'none'
+    if (planId && plan.id !== planId) return 'stale'
+    const result = applyUserStepDone(plan, stepId)
+    if (!result) return 'mismatch'
+    session.plan = result.plan
+    this.touch(session)
+    return 'done'
+  }
+
+  /**
+   * 记录本轮的人工步骤回执（与 `setPlanTurn` 对称）。
+   * prompt 构建要在**模型调用工具之前**知道"用户刚把第 N 步做完了"，模型据此先校验再继续。
+   */
+  setStepTurn(session: AgentSession, turn: StepTurn | undefined): void {
+    if (turn) session.stepTurn = turn
+    else delete session.stepTurn
     this.touch(session)
   }
 

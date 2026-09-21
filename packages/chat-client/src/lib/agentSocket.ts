@@ -19,7 +19,9 @@ export const DEFAULT_WC_BASE = '/wc'
 /**
  * 本轮的附加指令（对应 `chat.send` 的可选字段）：
  * - `mode`：模式请求值（`auto` / `act` / `plan`）—— 用户在 ModeSwitch 上的选择
- * - `planId`：确认某个计划（计划卡「开始执行」）
+ * - `planId`：确认某个计划（计划卡「开始执行」），也用于人工步骤推进时的过期判断
+ * - `revisePlanId`：对当前计划的修改意见（计划卡「修改计划」）
+ * - `stepDoneId`：人工步骤完成回执（计划卡「我已完成，下一步」）—— 被推进的步骤 id
  * - `questionId`：回答某个提问（问题卡选项 / 直接打字）
  */
 export interface ChatSendOptions {
@@ -28,6 +30,8 @@ export interface ChatSendOptions {
   planId?: string
   /** 对本轮的"修改计划"意见（计划卡「修改计划」）：值为当前计划的 planId，`text` 即意见 */
   revisePlanId?: string
+  /** 用户点「我已完成，下一步」的步骤 id（计划卡上的人工步骤） */
+  stepDoneId?: string
   questionId?: string
 }
 
@@ -291,6 +295,7 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
         ...(options?.mode ? { mode: options.mode } : {}),
         ...(options?.planId ? { planId: options.planId } : {}),
         ...(options?.revisePlanId ? { revisePlanId: options.revisePlanId } : {}),
+        ...(options?.stepDoneId ? { stepDoneId: options.stepDoneId } : {}),
         ...(options?.questionId ? { questionId: options.questionId } : {}),
       })
     },

@@ -561,7 +561,36 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 真调模型验收：`SMOKE_EXPECT=revise` 要求「同一 `planId` + `revision=2` + 未改动的步骤 id 保留」，实测通过
 （`endedBy: propose_plan → revise_plan → finish_turn`，全程无 `chat.error`）。
 
-- 设计文档：[openspec/changes/add-agent-modes-and-plan-turns](./openspec/changes/add-agent-modes-and-plan-turns/)；协议与状态机详见 [docs/agent-session.md §4.6](./docs/agent-session.md)。
+**人工步骤与人机交接**（`add-plan-manual-steps`）：页面上总有一部分功能 agent 做不了（写后端的保存/提交、
+不在能力清单里的操作、需要人本身的扫码/验证码、`call_page_method` 被拒）。以前这类步骤只有 prompt 规则 8
+的一句话，于是 ① 计划卡上看不出"轮到你了"，② 没有交回控制权的推进口（`ask_user` 是"问信息"不是"请你去做"），
+③ 进度由模型自报 ⇒ 它能直接把人做的步骤填进 `finish_turn.done`，④ 用户做错了没有任何提示位置。现在：
+
+| 层 | 做法 |
+|---|---|
+| 判据（判定权在 agent） | 规则 16：能在「当前页可用方法」清单里找到 → 自己 `call_page_method`（不交接）；写后端 / 清单里没有 / 需要人 → `handoff_step` 交回用户；`call_page_method` 被拒 → 不要硬试，改为交接 |
+| 交接 | 收尾工具 `handoff_step({ stepId, instruction, issue? })` → 该步 `status='waiting-user'` + `owner='user'` + `instructions`（+ `issue`）；**其它等待中的步骤收回 `pending`**（至多一个步骤在等你）；本轮 `endedBy='handoff_step'`、run status `waiting-user`；推 `chat.plan`（同 `planId`）+ 一条指引文本 |
+| 用户推进 | 计划卡主按钮「我已完成，下一步」→ `chat.send({ planId, stepDoneId })` → 服务端把该步标 `done` 并清 `issue`（**唯一推进口**），立刻回推权威卡片，并把回执写成本轮意图 `session.stepTurn` |
+| 服务端保证 | `applyPlanProgress` 里 `waiting-user` 的步骤不参与 `finish_turn.done` / `doneAll` → "不许自己假设用户做完了"不只靠 prompt |
+| 校验与纠错 | 规则 17：用户说做完后**先校验**（读页面事实）再继续；没做成就 `handoff_step({ issue })` → 该步回「需你重做」+ 原因/期望，按钮变「我已重做，下一步」；不会静默往下走 |
+| 卡片 | 步骤行三态（`describeStepStatus`：✓ / ⏳ 需要你操作 / ! 需你重做）；**有步骤在等你时面板强制展开**，折叠头另给「等你操作」徽标与状态行线索；本地只有 `completingStepId` 反馈态，步骤状态一律跟随服务端 `chat.plan` |
+| 不做 | 不做"逐步审批"（每步都要确认）；不在 `propose_plan` 时预先声明步骤归属（要不要人做取决于执行到那一步时页面实际能力）；不做宿主页面的视觉引导（高亮控件那类） |
+
+真调模型验收（demo-app 的 manifest，实测通过）：
+`SMOKE_EXPECT=handoff` 要求「出现 `waiting-user` + `endedBy='handoff_step'` + 用户推进被接受（该步 `done` 或带回 `issue`）+ 全程无 `chat.error`」——
+**成功路径**：`endedBy: propose_plan → handoff_step → finish_turn`；模型的指引是「在数据源管理页打开「新增数据源」弹窗并预填名称「订单库」…请补全 host/port 后点击『确定』提交（**保存是写后端操作，只能由你确认**）」，
+模拟用户点「我已完成，下一步」后模型**先复核页面事实再收尾**（规则 17 生效）。
+**纠错路径**（`SMOKE_HANDOFF_MISSING=1`：假页面数据里没有新建的那条）：实测出现
+`需重做：step-3 …｜原因：刚刷新数据源列表，只看到「用户库」（id 2），没有名为「订单库」的数据源` —— 该步被 `issue` 交回重做，
+卡片上显示「需你重做」+ 原因，用户点「我已重做，下一步」后再走一遍校验。
+> 这一跑揪出一个真 bug 并已修复：用户点过「我已完成」后该步已是 `done`，而最初"`done` 的步骤不许交接"一刀切，
+> 把**带 `issue` 的纠错交接**也拒了 ⇒ R3 在真机上根本走不到。现在 `done` + **带** `issue` 允许（退回 `waiting-user` 重做）——
+> 规则 17 也写硬了：「校验不通过**必须**用 `handoff_step({ stepId, issue })`，**不要**用 `finish_turn`」（否则计划里会留下"已完成"的假记录）。
+
+- 设计文档：[openspec/changes/add-agent-modes-and-plan-turns](./openspec/changes/add-agent-modes-and-plan-turns/)；
+  [openspec/changes/add-interactive-plan-revision](./openspec/changes/add-interactive-plan-revision/)；
+  [openspec/changes/add-plan-manual-steps](./openspec/changes/add-plan-manual-steps/)。
+  协议与状态机详见 [docs/agent-session.md §4.6~4.8](./docs/agent-session.md)。
 
 ## 七、关键踩坑与解法
 | 坑 | 现象 | 解法 |

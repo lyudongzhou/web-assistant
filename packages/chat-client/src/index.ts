@@ -76,6 +76,15 @@ export {
   type PlanCardStatus,
   type TurnState,
 } from './lib/turnState.js'
+// 计划里的人工步骤（`add-plan-manual-steps`）：等你操作的那一步 + 步骤展示口径 + "刚点完等校验"的反馈态
+export {
+  beginStepCompletion,
+  describeStepStatus,
+  handoffStep,
+  settleStepCompletion,
+  type PlanStepDisplay,
+  type PlanStepTone,
+} from './lib/turnState.js'
 // 渲染面归一化：`surface` 与 `createRuntime` 只推导一次（headless 宿主可用同一份逻辑，避免自己再判一遍）
 export { resolveSurfaceKind } from './lib/surface.js'
 // 「本轮动作」的格式化/截断纯逻辑：自写 UI 想复用同一套展示口径时用它
