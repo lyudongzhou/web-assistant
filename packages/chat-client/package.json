@@ -21,7 +21,8 @@
   "scripts": {
     "build:lib": "vite build --config vite.lib.config.ts && vue-tsc --declaration --emitDeclarationOnly -p tsconfig.build.json",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --import tsx --test test/*.test.mjs",
+    "test:render": "node test/render-split.mjs",
     "prepublishOnly": "pnpm build:lib"
   },
   "dependencies": {
@@ -38,6 +39,7 @@
     "@types/node": "^22.20.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "pinia": "^4.0.3",
+    "tsx": "^4.23.12",
     "typescript": "^5.8.2",
     "vite": "^6.0.7",
     "vue": "^3.5.13",

@@ -14,14 +14,22 @@
         <p class="hint">描述你想打开的页面，例如：<br />「我想看用户列表」「打开数据看板」</p>
       </div>
 
-      <div v-for="(m, i) in messages" :key="i" class="message" :class="m.role">
+      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`） -->
+      <div v-for="(m, i) in bubbles" :key="i" class="message" :class="m.role">
         <div class="bubble">{{ m.content }}</div>
       </div>
-
-      <div v-if="loading" class="message assistant">
-        <div class="bubble typing">思考中…</div>
-      </div>
     </div>
+
+    <!-- 过程区（步骤 / 思考 / 错误）——与结果气泡分离，流式指示器也在里面。
+         容器面与宿主直连面用**同一个**组件与同一份分流口径（见 lib/chatTrace.ts），避免两条渲染面漂移。 -->
+    <TraceTimeline
+      v-if="showTrace"
+      class="trace-panel"
+      :items="trace"
+      :activities="activities"
+      :duration-ms="traceDurationMs"
+      :loading="loading"
+    />
 
     <form class="input-bar" @submit.prevent="submit">
       <input
@@ -36,21 +44,38 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, watch, useTemplateRef } from 'vue'
-import type { ChatMessage } from '../types.js'
+import { ref, nextTick, computed, watch, useTemplateRef } from 'vue'
+import type { ChatMessage, WcActivity } from '../types.js'
+import { splitMessages } from '../lib/chatTrace.js'
+import TraceTimeline from './TraceTimeline.vue'
 
 const props = withDefaults(
   defineProps<{
+    /** **全部**消息（结果 + 过程条目）；分流在组件内完成，`kind` 缺省算结果气泡 */
     messages?: ChatMessage[]
     loading?: boolean
     placeholder?: string
+    /** 是否渲染「过程区」，缺省渲染 */
+    showTrace?: boolean
+    /** 过程区里本轮耗时（`chat.done.durationMs`） */
+    traceDurationMs?: number
+    /** runtime 活动（最新在前）——与 agent 步骤合并去重 */
+    activities?: WcActivity[]
   }>(),
   {
     messages: () => [],
     loading: false,
     placeholder: '描述你想打开的页面…',
+    showTrace: true,
+    traceDurationMs: undefined,
+    activities: () => [],
   },
 )
+
+/** 过程 / 结果分流（与宿主直连面共用 lib/chatTrace.ts 的同一份规则） */
+const split = computed(() => splitMessages(props.messages))
+const bubbles = computed(() => split.value.bubbles)
+const trace = computed(() => split.value.trace)
 
 const emit = defineEmits<{
   (event: 'send', text: string): void
@@ -160,8 +185,9 @@ watch(
   color: var(--wa-text, #1f2937);
   border-bottom-left-radius: 4px;
 }
-.typing {
-  color: var(--wa-text-muted, #9ca3af);
+/* 过程区：固定在消息区与输入栏之间，不参与消息区的滚动 */
+.trace-panel {
+  flex: 0 0 auto;
 }
 .input-bar {
   display: flex;

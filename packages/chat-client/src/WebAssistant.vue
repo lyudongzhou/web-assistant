@@ -23,7 +23,8 @@
           <template v-else>页面在宿主界面中打开 · 当前页面：{{ pageTitle }}</template>
         </span>
         <span v-if="status === 'loading'" class="host-hint-tip">加载中…</span>
-        <span v-if="loading" class="host-hint-tip">Agent 思考中…</span>
+        <!-- 「思考中」的过程提示由对话区的「过程区」承担（那里面有步骤与耗时），
+             这里只留「打断」这个控制 —— 两处都写一句"思考中"是重复提示。 -->
         <button v-if="loading" class="back-btn" @click="cancel()">✕ 打断</button>
       </div>
       <p v-if="error" class="host-error">{{ error.message }}</p>
@@ -35,6 +36,8 @@
         :messages="messages"
         :loading="loading"
         :placeholder="placeholder"
+        :activities="activities"
+        :trace-duration-ms="traceSummary.durationMs"
         @send="send"
         @new-session="startNewSession"
       />
@@ -43,7 +46,6 @@
         <div class="panel-title render-title">
           <span>渲染区域</span>
           <span v-if="status === 'loading'" class="loading-tip">加载中…</span>
-          <span v-if="loading" class="loading-tip">Agent 思考中…</span>
           <button v-if="loading" class="back-btn" @click="cancel()">
             ✕ 打断
           </button>
@@ -145,6 +147,7 @@ const {
   currentTag,
   activities,
   clearActivities,
+  traceSummary,
   back,
   // 推导后的渲染面（lib/surface.ts）：`renderArea` 用它，**不要**再判 `props.surface` ——
   // 两处各判一次会漂移出静默错配（runtime 实际是 host，面板却渲染一整列空的「渲染区域」）。

@@ -23,9 +23,46 @@ export type { WcActivity, WcActivityKind, WcActivityOrigin } from '@webassistant
 
 export type ChatRole = 'user' | 'assistant'
 
+/**
+ * 消息种类 —— **过程与结果的区分维度**。
+ *
+ * - `'message'`：结果（缺省）—— 用户要看的答复，渲染成气泡
+ * - `'reasoning'`：模型的思考增量 —— 渲染进过程区（与结果分离）
+ * - `'step'`：agent 的工具步骤 —— 渲染进过程区
+ * - `'error'`：run 级失败 —— 渲染进过程区（不污染结果气泡）
+ *
+ * 为什么是**可选取字段**而不是拆成两套列表：老宿主自造的 `ChatMessage` 不带 `kind`，
+ * 必须继续按结果气泡渲染（见 `lib/chatTrace.ts` 的 `splitMessages`）。
+ */
+export type ChatMessageKind = 'message' | 'reasoning' | 'step' | 'error'
+
+/**
+ * 一条对话消息。
+ *
+ * `content` 始终是**纯文本**：过程行不再以 `\n> …\n` 的形式拼进结果内容里
+ * （那是「思考过程与结果分不开」的根因 —— 一根字符串无法在 UI 上分离）。
+ */
 export interface ChatMessage {
   role: ChatRole
   content: string
+  /** 缺省 `'message'`（结果气泡）；过程 / 思考 / 错误见 `ChatMessageKind` */
+  kind?: ChatMessageKind
+  /** 产生时间（ms epoch）—— 过程区按它排序与配对 */
+  at?: number
+  /** 仅 `step`：结构化工具名（`render` / `wait_for_observation` / `call_page_method`） */
+  tool?: string
+  /** 仅 `step`：动作目标（render 的 tag / 方法名） */
+  target?: string
+  /** 仅 `step`：工具实参 */
+  args?: unknown
+  /** 仅 `step`：是否已收到结算（`phase:'end'`）。`false` = 还在跑（UI 显示进行中） */
+  settled?: boolean
+  /** 仅 `step` 且已结算：是否成功（缺省视为成功） */
+  ok?: boolean
+  /** 仅 `step` 且失败：原因 */
+  error?: string
+  /** 仅 `step` 且已结算：从开始到结算的耗时 */
+  durationMs?: number
 }
 
 /** 页面切换后回调给宿主的信息 */
@@ -188,6 +225,10 @@ export interface WebAssistantThemeVars {
   '--wa-text-muted'?: string
   /** assistant 气泡背景（默认 #f3f4f6） */
   '--wa-assistant-bubble-bg'?: string
+  /** 过程区背景（默认跟随 --wa-bg） */
+  '--wa-trace-bg'?: string
+  /** 过程区正文色（默认跟随 --wa-text-secondary） */
+  '--wa-trace-text'?: string
   /** 圆角（默认 8px） */
   '--wa-radius'?: string
   /** 大圆角：气泡（默认 12px） */
@@ -236,7 +277,8 @@ export interface WebAssistantThemeVars {
  * ```
  *
  * 要更深的定制（换布局 / 只取一部分）就用 headless 的 `useWebAssistant()`，
- * 或直接复用 `HostAssistantChat` + `HostAssistantActivities` 这两个「数据进、事件出」的组件。
+ * 或直接复用 `HostAssistantChat`（对话区：内含结果气泡 + 过程区分流）/
+ * `TraceTimeline`（过程区）/ `HostAssistantActivities`（纯 runtime 活动条）这些「数据进、事件出」的组件。
  */
 export interface HostAssistantDockProps {
   /**
@@ -265,9 +307,12 @@ export interface HostAssistantDockProps {
   helloHint?: string
   /** 状态行（连接 / 导航来源 / runtime / 当前页 expose）缺省显示 */
   showStatusLine?: boolean
-  /** 「本轮动作」时间线缺省显示 */
+  /**
+   * 「过程区」缺省显示 —— agent 的步骤 / 思考 + runtime 活动（合并去重后同一条时间轴）。
+   * 关掉就只剩对话气泡（过程不再可见）。
+   */
   showActivities?: boolean
-  /** 「本轮动作」初始是否展开（缺省收起） */
+  /** 「过程区」初始是否展开（缺省收起） */
   activitiesDefaultOpen?: boolean
   /** 回传活动条数上限（缺省 200，见 `UseRuntimeHostOptions.activityLimit`） */
   activityLimit?: number

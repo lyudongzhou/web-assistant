@@ -6,15 +6,17 @@ import WelcomePage from './components/WelcomePage.vue'
 import HostAssistantDock from './components/HostAssistantDock.vue'
 import HostAssistantChat from './components/HostAssistantChat.vue'
 import HostAssistantActivities from './components/HostAssistantActivities.vue'
+import TraceTimeline from './components/TraceTimeline.vue'
 import type { WebAssistantProps } from './types.js'
 
 export { WebAssistant }
 export { WelcomePage }
-// 宿主直连（用法 B）开箱即用的三件套：
-//   HostAssistantDock        悬浮窗（接线 + 壳 + 对话 + 状态行 + 动作时间线）—— 第三方首选
+// 宿主直连（用法 B）开箱即用的组件：
+//   HostAssistantDock        悬浮窗（接线 + 壳 + 对话 + 状态行 + 过程区）—— 第三方首选
 //   HostAssistantChat        对话区（数据进 / 事件出，可塞进宿主自己的布局）
-//   HostAssistantActivities  「本轮动作」折叠条
-export { HostAssistantDock, HostAssistantChat, HostAssistantActivities }
+//   TraceTimeline            过程区（agent 步骤 + 思考 + runtime 活动合并去重）
+//   HostAssistantActivities  纯 runtime 活动折叠条（带「清空」）
+export { HostAssistantDock, HostAssistantChat, HostAssistantActivities, TraceTimeline }
 // 显式上报通道：宿主只装 chat-client（用法 A / 容器模式）时也有明确入口，
 // 不必为了 import apiBus 额外引入 @webassistant/wc-runtime-vue。
 // 与 wc-runtime-vue / wc-runtime-core 转出的是**同一个全局单例**（Symbol.for + globalThis）。
@@ -49,9 +51,22 @@ export {
   formatActivityTime,
   selectVisibleActivities,
 } from './lib/activities.js'
+// 过程 / 结果分流的纯逻辑：自写 UI 想复用同一套「什么算过程、什么算结果」口径时用它
+export {
+  TRACE_MERGE_WINDOW_MS,
+  TRACE_VISIBLE_LIMIT,
+  appendStream,
+  buildTraceRows,
+  formatDuration,
+  mergeTimeline,
+  pushStep,
+  splitMessages,
+  summarizeTrace,
+} from './lib/chatTrace.js'
 
 export type {
   ChatMessage,
+  ChatMessageKind,
   ChatRole,
   HostAssistantDockProps,
   PageChangeInfo,
@@ -72,6 +87,7 @@ export type {
 } from './types.js'
 export type { UseRuntimeHostOptions, UseRuntimeHostReturn } from './composables/useRuntimeHost.js'
 export type { UseAgentChatOptions, UseAgentChatReturn } from './composables/useAgentChat.js'
+export type { TraceRow, TimelineItem, TraceSummary, StreamChannel } from './lib/chatTrace.js'
 export type { UseWelcomePageOptions, UseWelcomePageReturn } from './composables/useWelcomePage.js'
 export type { UseWebAssistantOptions, UseWebAssistantReturn } from './composables/useWebAssistant.js'
 

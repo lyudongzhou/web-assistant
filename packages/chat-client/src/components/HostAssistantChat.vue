@@ -1,6 +1,8 @@
 <template>
   <!-- 对话区（宿主直连面专用）：**数据进来、事件出去** —— 不认识 socket / runtime / manifest。
-       可以单独复用（塞进宿主自己的布局 / 用宿主的样子重画），也可以被 <HostAssistantDock> 包成悬浮窗。 -->
+       可以单独复用（塞进宿主自己的布局 / 用宿主的样子重画），也可以被 <HostAssistantDock> 包成悬浮窗。
+       内部按 `ChatMessage.kind` 分两栏：结果气泡（只有答复）+ 过程区（步骤 / 思考 / 错误，
+       见 <TraceTimeline>）—— 过程不再以 `> …` 混进结果内容里（那样 UI 无从分离）。 -->
   <div class="chat">
     <div ref="scrollEl" class="messages" @scroll="onScroll">
       <div v-if="!messages.length" class="hello">
@@ -21,14 +23,24 @@
         </slot>
       </div>
 
-      <div v-for="(message, index) in messages" :key="index" class="message" :class="message.role">
+      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`），过程行不再混进来 -->
+      <div v-for="(message, index) in bubbles" :key="index" class="message" :class="message.role">
         <div class="bubble">{{ message.content }}</div>
       </div>
-
-      <div v-if="loading" class="message assistant">
-        <div class="bubble typing">思考中…</div>
-      </div>
     </div>
+
+    <!-- 过程区（步骤 / 思考 / 错误）：与结果气泡**分离**。
+         流式期间的活动指示器也在里面 —— 不再另开一个「思考中…」气泡（那是重复提示）。 -->
+    <TraceTimeline
+      v-if="showTrace"
+      class="trace-panel"
+      :items="trace"
+      :activities="activities"
+      :include-activities="includeActivities"
+      :default-open="traceDefaultOpen"
+      :duration-ms="traceDurationMs"
+      :loading="loading"
+    />
 
     <!-- Enter 监听挂在**外层原生 div** 上：键盘事件从内部 textarea 冒泡上来，必然触发 -->
     <div class="input-bar" @keydown="onKeydown">
@@ -48,11 +60,17 @@
 //   ② 输入是多行 textarea + Enter/Shift+Enter；流式时按钮变「打断」
 //   ③ 空态是**可点的建议**（直接来自宿主自己的业务能力），不是一句写死的提示语
 // 保持 `ChatPanel` 原样 ⇒ 容器面（用法 A）的 DOM 与样式零回归。
-import { nextTick, ref, useTemplateRef, watch } from 'vue'
-import type { ChatMessage } from '../types.js'
+import { nextTick, computed, ref, useTemplateRef, watch } from 'vue'
+import type { ChatMessage, WcActivity } from '../types.js'
+import { splitMessages } from '../lib/chatTrace.js'
+import TraceTimeline from './TraceTimeline.vue'
 
 const props = withDefaults(
   defineProps<{
+    /**
+     * **全部**消息（结果气泡 + 过程条目）。过程 / 结果的分流在组件内部完成
+     * （`kind` 缺省一律算结果气泡）—— 老宿主只传结果消息时行为与以前完全一致。
+     */
     messages?: ChatMessage[]
     loading?: boolean
     placeholder?: string
@@ -62,6 +80,16 @@ const props = withDefaults(
     helloTitle?: string
     /** 空态说明 */
     helloHint?: string
+    /** 是否渲染「过程区」（步骤 / 思考 / 错误），缺省渲染 */
+    showTrace?: boolean
+    /** 过程区初始是否展开（缺省收起） */
+    traceDefaultOpen?: boolean
+    /** 过程区里本轮耗时（`chat.done.durationMs`），缺省不显示 */
+    traceDurationMs?: number
+    /** runtime 活动（最新在前）—— 与 agent 步骤合并去重进同一条时间轴 */
+    activities?: WcActivity[]
+    /** 是否把 runtime 活动并进过程区（缺省 true） */
+    includeActivities?: boolean
   }>(),
   {
     messages: () => [],
@@ -70,6 +98,11 @@ const props = withDefaults(
     suggestions: () => [],
     helloTitle: '让助手替你操作这个系统',
     helloHint: '页面在它自己的位置打开；助手只做「打开 / 筛选 / 预填」这类操作，提交永远由你点。',
+    showTrace: true,
+    traceDefaultOpen: false,
+    traceDurationMs: undefined,
+    activities: () => [],
+    includeActivities: true,
   },
 )
 
@@ -77,6 +110,11 @@ const emit = defineEmits<{
   send: [text: string]
   cancel: []
 }>()
+
+/** 过程 / 结果分流（规则在 lib/chatTrace.ts，纯逻辑可单测） */
+const split = computed(() => splitMessages(props.messages))
+const bubbles = computed(() => split.value.bubbles)
+const trace = computed(() => split.value.trace)
 
 const text = ref('')
 const scrollEl = useTemplateRef<HTMLElement>('scrollEl')
@@ -197,8 +235,9 @@ watch(
   border: 1px solid var(--wa-border, #e5e7eb);
   border-bottom-left-radius: 4px;
 }
-.typing {
-  color: var(--wa-text-muted, #9ca3af);
+/* 过程区：固定在消息区与输入栏之间，不参与消息区的滚动 */
+.trace-panel {
+  flex: 0 0 auto;
 }
 .input-bar {
   display: flex;

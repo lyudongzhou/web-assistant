@@ -112,10 +112,16 @@ type ClientMessage =
 // ───────── 服务端 → 客户端 ─────────
 type ServerMessage =
   | { t: 'session.ready'; sessionId: string; manifestVersion: number; welcome?: WelcomePayload }
-  | { t: 'chat.text'; delta: string }                             // 流式文本
-  | { t: 'agent.step'; index: number; text: string }              // 可见执行的轨迹
+  // 流式文本：channel 区分「结果正文」与「模型思考」（缺省 'text'）
+  | { t: 'chat.text'; delta: string; channel?: 'text' | 'reasoning' }
+  // 可见执行的轨迹（过程）：phase start 建行、end 就地结算（成败 + 耗时）
+  | {
+      t: 'agent.step'; index: number; text: string
+      phase?: 'start' | 'end'; tool?: ToolName; target?: string; args?: unknown
+      ok?: boolean; error?: string; durationMs?: number
+    }
   | { t: 'tool.call'; id: string; name: ToolName; args: unknown; timeoutMs: number }
-  | { t: 'chat.done'; steps: number }
+  | { t: 'chat.done'; steps: number; startedAt?: number; durationMs?: number }
   | { t: 'chat.error'; message: string }
   | { t: 'pong' }
 
@@ -458,11 +464,17 @@ watch(() => props.keyword, (v) => (keyword.value = v))
 | 元素 | 设计 |
 |---|---|
 | 渲染区顶部 | 操作条：`● agent 正在操作 · 步骤 1/2 · 用户列表（keyword=张三）` + 「打断」按钮（发 `chat.cancel`） |
-| 对话区 | 每个 `agent.step` 插一条浅色系统气泡，用户能看懂 agent 的推理路径 |
+| 对话区 | **过程与结果分区**：结果走气泡（只有答复正文）；`agent.step` / `reasoning` / 错误进「**过程区**」（缺省收起，标题带「N 步 · 进行中 · 失败数 · 本轮耗时」）。过程行不再以 `> …` 拼进结果气泡 —— 那样一根字符串无法在 UI 上分离（已修复） |
+| 过程区每行 | 状态点（✓ / ✗ / ◐）+ 工具名 + 文案（**含动作目标**，如「正在打开页面 `<user-list>`」）+ 耗时；失败原因就地显示；点开看 args / result |
+| 思考 | 模型的 reasoning 增量走 `chat.text{channel:'reasoning'}`，在过程区渲染成**灰色斜体块**（带「思考」标签），与步骤行刻意不同形；模型无 reasoning 时该块不出现 |
+| 步骤闭合 | `agent.step` 带 `phase:'start'|'end'`：end 就地把那一行结算（成败 + 耗时），不新增行 |
 | 页面切换 | 不加人为延时 —— 等接口本身就有几百 ms 的自然停留，足够看清 |
 | 冲突处理 | agent 操作期间渲染区加半透明遮罩（防误点导致导航冲突），打断后立即解除 |
 | 失败 | `timedOut` 时步骤条标红：`未取到用户列表数据，已改为直接询问` |
 | 用户中途导航 | 页面自己的 `router.push` 会发 `page.navigated{source:'page'}`，agent 下一轮知道页面变了 |
+
+过程与结果的**数据口径**（什么算过程、什么算结果、怎么与 runtime 活动合并去重）收敛在
+`packages/chat-client/src/lib/chatTrace.ts`，两条渲染面（容器面 `ChatPanel` / 宿主直连 `HostAssistantChat`）共用同一份，避免漂移。
 
 ## 11. agent-server 结构（Nest + Fastify）
 

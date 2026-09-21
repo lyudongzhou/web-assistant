@@ -388,7 +388,8 @@ ctx.t('key'); ctx.state.user; ctx.nav.push({ tag })
 - 容器侧另有「批次内空态」（`defineVueContainer({ renderEmpty })`，默认文案「暂无页面」）：它属于**容器 shadow DOM 内部**，
   由被服务项目配置（容器 bundle 自带另一份 vue，宿主的 Vue 组件传不进去）；单框架 + 首屏不导航时容器是懒建的、
   不会触发，宿主级欢迎页不走它。
-- 客户端 `useAgentChat` 在 `chat.done`/`chat.error` 后重置流式游标，使 server 主动推送的消息另起一条气泡。
+- 客户端 `useAgentChat` 在 `chat.done`/`chat.error` 后重置流式游标，使 server 主动推送的消息另起一条气泡
+  （游标**按通道各持一个**：结果 `chat.text{channel:'text'}` 与思考 `{channel:'reasoning'}` 不会互相串行）。
 
 ### 6.8.1 wcManifestPlugin：可选的 manifest 增量集成（vite-plugin-wc）
 
@@ -480,7 +481,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | 样式 / UI 库 | 容器内打包 + shadow 隔离（有泄漏点要补） | 宿主自己的（无隔离问题） |
 | 登录 / 路由守卫 | 容器内 memory router，不受宿主守卫约束 | 走宿主真实守卫（⚠️ 被拒时 URL 挡住，但 agent 仍拿 `ok:true` —— 已知缺口） |
 | URL / 刷新 / 分享 | 宿主 URL 不变（页面在面板内） | URL 就是当前页 |
-| 面板渲染区 | 有（欢迎页空态） | **无**（面板是库导出的 `<HostAssistantDock>` 悬浮窗：状态行 + 对话 + 「本轮动作」；页面在宿主界面，错误横幅在面板内） |
+| 面板渲染区 | 有（欢迎页空态） | **无**（面板是库导出的 `<HostAssistantDock>` 悬浮窗：状态行 + 对话 + 过程区；页面在宿主界面，错误横幅在面板内） |
 
 - **执行面只开放「只读 + 视图操作 + 预填」**：`call_page_method` 是 agent → 页面**唯一**的写通道，所以
   「不让 agent 直接下发数据」的落地方式是**不把写后端的方法放进 `defineExpose`** —— agent 只能打开配置
@@ -506,7 +507,7 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
   完整清单、部署物对照与验收步骤见 [docs/INTEGRATION_GUIDE.md §9](./docs/INTEGRATION_GUIDE.md)。
   - **自定义窗口（demo 走的路）**：内置 `<WebAssistant>` 在 host 模式下仍会带 header + host-hint 提示条 +
     「执行监视」侧栏（都是为渲染区配的），塞进窄 dock 只剩冗余。demo 因此走 headless：
-    `<HostAssistantDock :create-runtime>`（chat-client 导出的悬浮窗，无渲染区：状态行 + 对话 +「本轮动作」）。
+    `<HostAssistantDock :create-runtime>`（chat-client 导出的悬浮窗，无渲染区：状态行 + 对话 + 过程区）。
     要更自由就用 headless `useWebAssistant({ createRuntime })`，或 `HostAssistantChat` +
     `HostAssistantActivities` 这两个「数据进、事件出」的组件自己拼布局。
 - **验收台**：`pnpm dev`（demo-app 的唯一宿主外壳，5173）—— 业务路由 + 悬浮 dock = 用法 B；

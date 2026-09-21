@@ -6,12 +6,16 @@ interface AgentEventEnvelope {
   type: string
   iteration?: number
   text?: string
-  toolCall?: { toolName: string }
+  /** tool-started / tool-finished 携带的调用信息（input 是工具实参） */
+  toolCall?: { toolName: string; toolCallId?: string; input?: unknown }
+  /** tool-finished 携带的结算消息（parts 里有 tool-result，isError 表示成败） */
+  message?: unknown
   error?: unknown
   /** SDK 对 provider 错误的分类（run-failed 事件携带），便于定位失败原因 */
   errorClass?: string
 }
 import type {
+  AgentStepMessage,
   CallPageMethodToolArgs,
   RenderToolArgs,
   WaitForObservationToolArgs,
@@ -22,17 +26,11 @@ import { ManifestService } from '../manifest/manifest.service.js'
 import { SessionService } from '../session/session.service.js'
 import { RpcService } from '../rpc/rpc.service.js'
 import { truncate, errorText } from '../logging.js'
+import { projectTraceEvent } from './traceEvents.js'
 
 const MAX_ITERATIONS = Number(process.env.MAX_AGENT_STEPS || 6)
 const TOOL_TIMEOUT_MS = Number(process.env.TOOL_CALL_TIMEOUT_MS || 8_000)
 const OBSERVATION_TIMEOUT_MS = Number(process.env.OBSERVATION_WAIT_TIMEOUT_MS || 10_000)
-
-/** 工具名 → 「agent.step」事件给用户看的简短文案 */
-const TOOL_STEP_TEXT: Record<string, string> = {
-  render: '正在打开页面',
-  wait_for_observation: '正在等待页面数据',
-  call_page_method: '正在调用页面方法',
-}
 
 /** 单次请求投影的消息上限（长驻 transcript 可能累积几十轮，避免 token 无界增长） */
 const MAX_TURN_MESSAGES = Number(process.env.MAX_TURN_MESSAGES || DEFAULT_MAX_TURN_MESSAGES)
@@ -59,6 +57,12 @@ interface SessionAgentEntry {
   streamedText: string
   /** 当前 run 的错误分类（run-failed 事件携带），仅用于日志 */
   errorClass?: string
+  /**
+   * 当前 run 里每个工具调用的开始时间（toolCallId → ms）。
+   * SDK 的 `tool-finished` 事件**不带** durationMs，耗时只能自己配对算 ——
+   * 没有它过程区就只能显示一堆没有时间感的步骤。
+   */
+  toolStartedAt: Map<string, number>
 }
 
 @Injectable()
@@ -190,25 +194,24 @@ export class AgentService {
       unsubscribe: () => {},
       running: false,
       streamedText: '',
+      toolStartedAt: new Map(),
     }
-    // 订阅一次、活到会话结束：流式文本与工具轨迹持续回推给本连接
+    // 订阅一次、活到会话结束：事件 → 消息 的映射全在 traceEvents.ts（纯函数、可单测），
+    // 这里只负责把投影出来的消息推给本连接。
     entry.unsubscribe = entry.agent.subscribe((rawEvent: unknown) => {
       const event = rawEvent as AgentEventEnvelope
       if (event.type === 'run-failed') entry.errorClass = event.errorClass
-      if (event.type === 'assistant-text-delta' && event.text) {
-        entry.streamedText += event.text
-        this.rpc.notify(sessionId, { t: 'chat.text', delta: event.text })
-      }
-      if (event.type === 'tool-started' && event.toolCall) {
-        const label = TOOL_STEP_TEXT[event.toolCall.toolName] || `正在执行 ${event.toolCall.toolName}`
-        this.logger.debug(
-          `agent step session=${sessionId} iteration=${event.iteration ?? 0} tool=${event.toolCall.toolName}`,
-        )
-        this.rpc.notify(sessionId, {
-          t: 'agent.step',
-          index: event.iteration || 0,
-          text: label,
-        })
+
+      const { messages, streamText } = projectTraceEvent(event, entry.toolStartedAt)
+      if (streamText && event.text) entry.streamedText += event.text
+      for (const message of messages) {
+        // 过程步骤留一条 debug 轨迹（排查"agent 到底做了什么"时不必开 tcpdump）
+        if (message.t === 'agent.step') {
+          this.logger.debug(
+            `agent step ${message.phase ?? 'start'} session=${sessionId} tool=${message.tool} target=${message.target ?? '-'}${message.error ? ` error=${message.error}` : ''}`,
+          )
+        }
+        this.rpc.notify(sessionId, message)
       }
     })
     this.sessionAgents.set(sessionId, entry)
@@ -224,6 +227,8 @@ export class AgentService {
     entry.running = true
     entry.streamedText = ''
     entry.errorClass = undefined
+    // 上一轮若有工具没收到 tool-finished（abort / 超时），残留的配对会算出离谱耗时 —— 每轮清空
+    entry.toolStartedAt.clear()
     session.activeRun = {
       id: crypto.randomUUID(),
       status: 'running',
@@ -254,11 +259,17 @@ export class AgentService {
           `agent run done session=${sessionId} status=${result.status} steps=${result.iterations} elapsed=${elapsedMs}ms`,
         )
         if (!entry.streamedText && result.outputText) {
-          this.rpc.notify(sessionId, { t: 'chat.text', delta: result.outputText })
+          this.rpc.notify(sessionId, { t: 'chat.text', delta: result.outputText, channel: 'text' })
           entry.streamedText = result.outputText
         }
       }
-      this.rpc.notify(sessionId, { t: 'chat.done', steps: result.iterations })
+      // 过程区的折叠标题要「共 N 步 · X.Xs」——步数与总耗时都来自本轮 run
+      this.rpc.notify(sessionId, {
+        t: 'chat.done',
+        steps: result.iterations,
+        startedAt: session.activeRun.startedAt,
+        durationMs: elapsedMs,
+      })
     } catch (error) {
       if (session.activeRun) {
         session.activeRun.status = 'failed'

@@ -7,7 +7,7 @@
 //   - useRuntimeHost  → 渲染宿主（manifest / 容器 / 路由 / 样式）
 //   - useAgentChat    → 对话状态机（消息 / loading / 流式拼接 / tool.call 分发）
 //   - 本文件          → 把三者接起来，并负责「运行时事件 → socket 转发」的映射
-import { onMounted, onUnmounted, ref, watch, type Ref, type ShallowRef } from 'vue'
+import { onMounted, onUnmounted, ref, watch, type ComputedRef, type Ref, type ShallowRef } from 'vue'
 import { createAgentSocket, type AgentSocket, type AgentSocketState } from '../lib/agentSocket.js'
 import { useRuntimeHost } from './useRuntimeHost.js'
 import { useAgentChat } from './useAgentChat.js'
@@ -27,6 +27,7 @@ import type {
 } from '@webassistant/wc-runtime-vue/host'
 import type { ChatMessage, PageChangeInfo, PageEventPayload, WebAssistantRuntimeContext } from '../types.js'
 import type { UseWelcomePageReturn } from './useWelcomePage.js'
+import type { TraceSummary } from '../lib/chatTrace.js'
 import { resolveSurfaceKind } from '../lib/surface.js'
 
 export interface UseWebAssistantOptions {
@@ -145,6 +146,15 @@ export interface UseWebAssistantReturn {
   activities: Ref<WcActivity[]>
   /** 清空活动时间线（同时清 activityBus 的全局缓冲） */
   clearActivities: () => void
+  /**
+   * **结果气泡**（`kind` 缺省或 `'message'`）—— 对话区只渲染这些。
+   * 与 `trace` 互补：两者合起来正好是 `messages`（切分规则见 lib/chatTrace.ts）。
+   */
+  bubbles: ComputedRef<ChatMessage[]>
+  /** **过程条目**（步骤 / 思考 / 错误）—— 渲染进「过程区」，与结果气泡分离 */
+  trace: ComputedRef<ChatMessage[]>
+  /** 过程区折叠标题的摘要：步数 / 进行中 / 失败 / 本轮耗时 */
+  traceSummary: ComputedRef<TraceSummary>
 }
 
 export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAssistantReturn {
@@ -255,6 +265,9 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   // ---- 对话状态机 ----
   const {
     messages,
+    bubbles,
+    trace,
+    traceSummary,
     loading,
     welcome,
     sessionReady,
@@ -315,6 +328,9 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
   return {
     wsStatus,
     messages,
+    bubbles,
+    trace,
+    traceSummary,
     loading,
     welcome,
     sessionReady,

@@ -69,6 +69,9 @@
   --wa-error-text: var(--app-danger);
   --wa-error-bg: #fef2f2;
   --wa-error-border: #fecaca;
+  /* 过程区：与对话气泡刻意不同色系（一眼分出「在想 / 在做」与「答的」） */
+  --wa-trace-bg: var(--app-bg);
+  --wa-trace-text: var(--app-text-secondary);
 }
 
 * {

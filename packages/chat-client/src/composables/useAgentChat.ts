@@ -2,9 +2,14 @@
 // 只管对话，不知道 runtime 的存在 —— 渲染由 useRuntimeHost 负责，两者在组件里接线。
 //
 // 通信链路：agentSocket.sendChat → WS → agent-server → AgentService.run()
-//           ← WS ← chat.text / agent.step / tool.call / chat.done / chat.error
-import { ref, shallowRef, type Ref } from 'vue'
+//           ← WS ← chat.text(结果/思考两条 channel) / agent.step(过程) / tool.call / chat.done / chat.error
+//
+// ⚠️ 过程与结果**必须**落成不同 kind 的消息（见 lib/chatTrace.ts）：
+// 早期实现把过程行以 `\n> …\n` 追加进**同一条** assistant 消息的 content 里，
+// 结果 UI 只拿到一根字符串，思考过程与结果在界面上无法分离 —— 那正是本次修复的根因。
+import { computed, ref, shallowRef, type ComputedRef, type Ref } from 'vue'
 import type {
+  AgentStepMessage,
   ServerMessage,
   ToolResultMessage,
   RenderToolArgs,
@@ -14,6 +19,14 @@ import type {
 } from '@webassistant/protocol/websocket'
 import type { AgentSocket } from '../lib/agentSocket.js'
 import type { ChatMessage } from '../types.js'
+import {
+  appendStream,
+  pushStep,
+  splitMessages,
+  summarizeTrace,
+  type StreamChannel,
+  type TraceSummary,
+} from '../lib/chatTrace.js'
 
 export interface UseAgentChatOptions {
   /** 已连接的 agentSocket（由调用方创建并管理生命周期） */
@@ -35,7 +48,17 @@ export interface UseAgentChatOptions {
 }
 
 export interface UseAgentChatReturn {
+  /** 全部消息（结果气泡 + 过程条目，按发生顺序） */
   messages: Ref<ChatMessage[]>
+  /**
+   * 结果气泡（`kind` 缺省或 `'message'`）—— 只渲染这些进对话气泡区。
+   * 与 `trace` 互补，两者合起来正好是 `messages`（见 lib/chatTrace.ts 的 `splitMessages`）。
+   */
+  bubbles: ComputedRef<ChatMessage[]>
+  /** 过程条目（步骤 / 思考 / 错误）—— 渲染进「过程区」，默认折叠 */
+  trace: ComputedRef<ChatMessage[]>
+  /** 过程区折叠标题的摘要（步数 / 进行中 / 失败 / 本轮耗时） */
+  traceSummary: ComputedRef<TraceSummary>
   loading: Ref<boolean>
   /** 连接握手（session.ready）时 agent 下发的欢迎载荷，供渲染区欢迎页使用；未下发时为 null */
   welcome: Ref<WelcomePayload | null>
@@ -66,16 +89,29 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
   const welcome = shallowRef<WelcomePayload | null>(null)
   /** 是否已收到 `session.ready`（握手完成：欢迎载荷有无都已确定，供欢迎页退出加载态） */
   const sessionReady = ref(false)
-  /** 当前正在流式接收的 assistant 消息下标，-1 表示还没开始 */
-  let streamingIndex = -1
+  /**
+   * 流式游标 —— **按通道各持一个**（结果 / 思考）。
+   * 共用一个游标就会出现「思考的 delta 追加进了结果气泡」这类串行错配。
+   * `-1` = 该通道这一段流还没开始。
+   */
+  const cursors: Record<StreamChannel, number> = { message: -1, reasoning: -1 }
+  /** 本轮 run 总耗时（`chat.done.durationMs`），供过程区标题显示 */
+  const turnDurationMs = ref<number | undefined>(undefined)
 
-  function appendAssistant(text: string): void {
-    if (streamingIndex < 0) {
-      messages.value.push({ role: 'assistant', content: '' })
-      streamingIndex = messages.value.length - 1
-    }
-    const current = messages.value[streamingIndex]
-    if (current) current.content += text
+  /** 一段流结束（新一段另起气泡） */
+  function endStreams(): void {
+    cursors.message = -1
+    cursors.reasoning = -1
+  }
+
+  /** 追加一段流式文本到指定通道（结果 / 思考） */
+  function appendStreamText(channel: StreamChannel, delta: string): void {
+    cursors[channel] = appendStream(messages.value, cursors[channel], channel, delta)
+  }
+
+  /** 过程区条目（不参与流式游标：步骤独立成条，可反复就地结算） */
+  function appendStep(step: AgentStepMessage): void {
+    pushStep(messages.value, step)
   }
 
   function handleServerMessage(message: ServerMessage): void {
@@ -86,24 +122,28 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         sessionReady.value = true
         break
       case 'chat.text':
-        appendAssistant(message.delta)
+        // channel 缺省 = 结果正文（兼容旧 server）；'reasoning' = 模型思考，独立成栏
+        appendStreamText(message.channel === 'reasoning' ? 'reasoning' : 'message', message.delta)
         break
       case 'agent.step':
-        appendAssistant(`\n> ${message.text}\n`)
+        // 过程步骤：独立成条 + 按 phase 就地结算 —— 不与结果正文共用游标
+        appendStep(message)
         break
       case 'tool.call':
         void handleToolCall(message)
         break
       case 'chat.done':
         loading.value = false
-        // 结束当前流式气泡：下一次 chat.text 另起一条消息
+        turnDurationMs.value = message.durationMs
+        // 结束当前流：下一次 chat.text 另起一条消息
         // （server 主动推送的欢迎语等在「上一轮结束后」到达，必须另起气泡而不是追加）
-        streamingIndex = -1
+        endStreams()
         break
       case 'chat.error':
-        appendAssistant(`\n[错误] ${message.message}`)
+        // 错误进过程区：结果气泡只放"答复"，把 run 级失败混进去会让人以为那是 agent 的回答
+        messages.value.push({ role: 'assistant', content: message.message, kind: 'error', at: Date.now() })
         loading.value = false
-        streamingIndex = -1
+        endStreams()
         break
     }
   }
@@ -114,7 +154,8 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
     // render 工具：收到即 ack「已完成」（server 只等 ack，不等页面数据就绪）
     if (message.name === 'render') {
-      appendAssistant(`\n> 正在打开页面...\n`)
+      // ⚠️ 这里**不再**渲染「正在打开页面…」：过程文案唯一来源是 server 的 `agent.step`
+      //（带目标、带起止与耗时）。客户端再插一行 = 同一个动作在过程区出现两遍。
       const renderArgs = message.args as RenderToolArgs
       // 与那次 tool 调用 in-band 对应；只表示导航请求已受理，不代表页面/数据就绪
       const ack: ActivityAckData = { status: 'done', target: renderArgs.tag }
@@ -134,7 +175,6 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     // 不走 RPC —— client 收到此 tool.call 是防御性处理，返回空结果即可。
     // 观察事件通过 page.data / page.emit 消息独立转发到 server。
     if (message.name === 'wait_for_observation') {
-      appendAssistant(`\n> 等待页面数据...\n`)
       const result: ToolResultMessage = {
         t: 'tool.result',
         id: message.id,
@@ -148,8 +188,6 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     // call_page_method 工具：执行当前页 expose 的方法 → 回 tool.result
     if (message.name === 'call_page_method') {
       const args = message.args as CallPageMethodToolArgs
-      const targetLabel = args.page ? `<${args.page}>` : '当前页'
-      appendAssistant(`\n> 正在调用 ${targetLabel}.${args.name}()...\n`)
       // server 端 rpc.call 只接受一次 result。call_page_method 必须等执行结果（不等用户就无意义），
       // 所以不预 ack，拿到结果再统一回一条 tool.result。失败/超时由 server 端 TOOL_CALL_TIMEOUT_MS 兜底。
       const settled: ToolResultMessage = await options
@@ -192,12 +230,13 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     if (!message || loading.value) return
     const socket = options.socket()
     if (!socket || !socket.connected) {
-      messages.value.push({ role: 'assistant', content: '[无法连接 agent-server]' })
+      messages.value.push({ role: 'assistant', content: '[无法连接 agent-server]', kind: 'error', at: Date.now() })
       return
     }
-    messages.value.push({ role: 'user', content: message })
+    messages.value.push({ role: 'user', content: message, at: Date.now() })
     loading.value = true
-    streamingIndex = -1
+    endStreams()
+    turnDurationMs.value = undefined
     socket.sendChat(message)
   }
 
@@ -208,7 +247,8 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
 
   function reset(): void {
     messages.value = []
-    streamingIndex = -1
+    endStreams()
+    turnDurationMs.value = undefined
     loading.value = false
   }
 
@@ -235,8 +275,20 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     })
   }
 
+  // ---- 过程 / 结果的派生视图 ----
+  // UI 只关心这两栏；切分规则在 lib/chatTrace.ts（纯逻辑、可单测），这里只做响应式包装。
+  // 一次切分派生出两个视图，避免两处各扫一遍列表。
+  const split = computed(() => splitMessages(messages.value))
+  const bubbles = computed(() => split.value.bubbles)
+  const trace = computed(() => split.value.trace)
+  /** 过程区折叠标题：步数 / 进行中 / 失败 / 本轮耗时 */
+  const traceSummary = computed(() => summarizeTrace(trace.value, turnDurationMs.value))
+
   return {
     messages,
+    bubbles,
+    trace,
+    traceSummary,
     loading,
     welcome,
     sessionReady,

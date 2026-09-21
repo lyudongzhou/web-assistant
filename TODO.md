@@ -150,7 +150,9 @@
 - [x] 支持 chat.text、agent.step、chat.done、chat.error、chat.cancel。
 - [ ] 执行 render Tool Call 并立即返回 result；未知工具返回 unsupported tool。
 - [ ] 将导航、网络观察、错误和 timeout 发送给服务端。
-- [ ] UI 展示 Agent 步骤、waiting-observation、错误、超时和取消状态；超时后恢复交互。
+- [x] **过程 / 结果分离**：`chat.text` 分 `text` / `reasoning` 两个 channel；`agent.step` 带 `phase/tool/target/durationMs`；
+  对话区拆「结果气泡 + 过程区」（`lib/chatTrace.ts` + `<TraceTimeline>`），过程行不再以 `> …` 拼进结果气泡。
+- [x] UI 展示 Agent 步骤、waiting-observation、错误、超时和取消状态；超时后恢复交互。
 
 ## 7. Demo 验收
 

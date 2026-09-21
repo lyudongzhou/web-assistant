@@ -174,15 +174,56 @@ export interface WelcomePayload {
   capabilities: WelcomeCapability[]
 }
 
+/**
+ * 助手流式文本增量。
+ *
+ * `channel` 区分**结果**与**思考**（缺省 `'text'`）：
+ * - `'text'`：给用户的答复正文 —— 客户端渲染成结果气泡
+ * - `'reasoning'`：模型的思考/推理增量（provider 的 reasoning_content）—— 客户端渲染进「过程区」，
+ *   与结果气泡**分离**，用户能看清「想的」与「答的」
+ *
+ * 为什么用**可选字段**而不是新增一个 `chat.reasoning` 消息类型：本文件顶部约定「未知 t 应忽略并记录日志」，
+ * 新增顶层 t 会让旧客户端**静默丢掉**思考内容；而一个不认识的字段不会 —— 旧端把 reasoning 增量
+ * 当普通文本渲染（内容不丢、不崩），只是不分栏。新老两端因此可以各自升级。
+ */
 export interface ChatTextMessage {
   t: 'chat.text'
   delta: string
+  channel?: 'text' | 'reasoning'
 }
 
+/**
+ * 过程步骤的阶段：
+ * - `'start'`：开始执行（`wait_for_observation` 这类可能持续数秒，UI 需要一个"进行中"状态）
+ * - `'end'`：已结算 —— 带 `ok` / `error` / `durationMs`，UI 据此把那一行"闭合"（✓ / ✗ + 耗时）
+ */
+export type AgentStepPhase = 'start' | 'end'
+
+/**
+ * agent 执行轨迹的一步（过程，不是结果）。
+ *
+ * 客户端**不应**把它追加进结果气泡：`docs/agent-session.md` §10 的既定 UX 是
+ * 「每个 agent.step 一条浅色系统气泡（过程区）」，与结果气泡分开。
+ */
 export interface AgentStepMessage {
   t: 'agent.step'
   index: number
+  /** 面向用户的一句话（server 侧已含动作目标，如「正在打开页面 user-list」） */
   text: string
+  /** 缺省 `'start'`（兼容只推 start 的旧 server） */
+  phase?: AgentStepPhase
+  /** 结构化工具名 —— UI 可据此分组/配色，不必解析 text */
+  tool?: ToolName
+  /** 动作目标：render 的 tag / call_page_method 的方法名 */
+  target?: string
+  /** 工具实参（render 的 params/props 等）—— 过程区点开可看细节 */
+  args?: unknown
+  /** 仅 `phase: 'end'`：是否成功（缺省视为成功） */
+  ok?: boolean
+  /** 仅 `phase: 'end'`：失败原因 */
+  error?: string
+  /** 仅 `phase: 'end'`：从 start 到结算的耗时 */
+  durationMs?: number
 }
 
 export interface RenderToolArgs {
@@ -224,6 +265,10 @@ export interface ToolCallMessage {
 export interface ChatDoneMessage {
   t: 'chat.done'
   steps: number
+  /** 本轮 run 开始时间（ms epoch）；缺省时 UI 不显示耗时（兼容旧 server） */
+  startedAt?: number
+  /** 本轮 run 总耗时 ms —— 过程区折叠标题的「共 N 步 · X.Xs」用它 */
+  durationMs?: number
 }
 
 export interface ChatErrorMessage {

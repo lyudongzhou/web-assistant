@@ -38,15 +38,12 @@
         :suggestions="suggestList"
         :hello-title="helloTitle"
         :hello-hint="helloHint"
+        :activities="activities"
+        :show-trace="showActivities"
+        :trace-default-open="activitiesDefaultOpen"
+        :trace-duration-ms="traceSummary.durationMs"
         @send="send"
         @cancel="cancel"
-      />
-
-      <HostAssistantActivities
-        v-if="showActivities"
-        :activities="activities"
-        :default-open="activitiesDefaultOpen"
-        @clear="clearActivities"
       />
     </section>
 
@@ -59,12 +56,12 @@
 
 <script setup lang="ts">
 // 分工：会话/状态/事件编排放这里（chat-client 的 headless 层），UI 全在子组件里。
-//   HostAssistantChat       对话区（可单独复用）
-//   HostAssistantActivities 「本轮动作」折叠条（可单独复用）
-// 宿主想更自由：用 `useWebAssistant()`（headless）或这两个子组件自己拼。
+//   HostAssistantChat       对话区（可单独复用）—— 内部按 kind 分流「结果气泡 / 过程区」
+//   TraceTimeline           过程区（步骤 / 思考 / 错误 + runtime 活动合并去重，可单独复用）
+//   HostAssistantActivities 纯 runtime 活动折叠条（带「清空」，可单独复用）
+// 宿主想更自由：用 `useWebAssistant()`（headless）或这些子组件自己拼。
 import { computed, ref } from 'vue'
 import HostAssistantChat from './HostAssistantChat.vue'
-import HostAssistantActivities from './HostAssistantActivities.vue'
 import { useWebAssistant } from '../composables/useWebAssistant.js'
 import type { AgentSocketState } from '../lib/agentSocket.js'
 import type {
@@ -124,7 +121,6 @@ const {
   wsStatus,
   error,
   activities,
-  clearActivities,
   status,
   currentTag,
   pageTitle,
@@ -133,6 +129,7 @@ const {
   pageExposedKeys,
   navigationSource,
   routes,
+  traceSummary,
 } = useWebAssistant({
   wsBase: props.wsBase,
   // `createRuntime` 一旦提供，渲染面缺省即推导为 'host'（见 lib/surface.ts）——

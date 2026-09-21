@@ -108,7 +108,8 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (welcome) {
       setTimeout(() => {
         this.logger.debug(`welcome -> session=${session.id} capabilities=${welcome.capabilities.length}`)
-        this.rpc.notify(session.id, { t: 'chat.text', delta: welcome.text })
+        this.rpc.notify(session.id, { t: 'chat.text', delta: welcome.text, channel: 'text' })
+        // 欢迎语不是一次 agent run：不带 startedAt/durationMs（过程区的耗时只属于真正的 run）
         this.rpc.notify(session.id, { t: 'chat.done', steps: 0 })
       }, 0)
     }
