@@ -79,9 +79,9 @@
 - [x] 实现 `SessionStore` 接口和内存 `Map` 实现，预留 Redis 替换点。
 - [x] 实现创建/恢复、`lastSeenAt`、TTL 清理、历史限制和观察结果限制。
 - [x] 记录当前页面、导航来源、pending request、response/error/timeout 和 late response。
-- [ ] AgentRun 状态：`running`、`waiting-observation`、`waiting-user`、`completed`、`failed`、`cancelled`。
-- [ ] 支持从观察事件唤醒等待 AgentRun，支持取消、最大步数和总时长。
-- [ ] 防止同一 Session 的冲突并发运行；结束时清理全部 timer/promise。
+- [x] AgentRun 状态：`running`、`waiting-observation`、`waiting-user`（提问回合）、`waiting-plan`（等计划确认）、`completed`、`failed`、`cancelled` —— `waiting-*` 表示"上一轮停在等用户决策"（run 已结束），见 `add-agent-modes-and-plan-turns`。
+- [x] 支持从观察事件唤醒等待 AgentRun，支持取消、最大步数和总时长上限；**步数用尽不再算失败**（降级为「已暂停」）。
+- [x] 防止同一 Session 的冲突并发运行；结束时清理全部 timer/promise。
 
 ### 3.4 Tool RPC
 
@@ -114,8 +114,21 @@
 - [ ] Agent 规则：缺少 id 时寻找支持 keyword 的候选列表页；render 后不假设完成；必要时 wait；失败/超时可有限重试、换策略或询问；只使用观察结果确认的 ID。
 - [x] 入参通道显式化：manifest 的 `params[].in`（`path` / `query`）由 analyzer 从「path 正则 + 页面源码里 route.query.x 的读取」探测得出，prompt 按通道分段；`render` 的 `params` 同时承载两种通道（path 段没声明的键会被 vue-router 丢弃，只能走 query）。详见 openspec `detect-route-query-params`。
 
-## 5. 数据上报（原「Runtime 透明观察」—— 已改向）
+### 4.1 模式与回合边界（已实施：`add-agent-modes-and-plan-turns`）
 
+> 目标：复杂任务不再被单轮步数上限**硬中断**（过去 = `chat.error`），并且信息不足时 agent 能主动问用户。
+
+- [x] `agent/mode.ts`：三模式（`act` / `plan` / `auto`）+ 三层判定（显式 > 启发式 > 模型自判），纯函数可单测。
+- [x] 收尾工具（`lifecycle.completesRun`）：`propose_plan` / `ask_user` / `finish_turn` → 本轮 `completed` 正常收尾。
+- [x] 步数软着陆：`hooks.beforeModel` 在倒数一步注入收尾提醒；`exceeded maxIterations` 降级为「已暂停」（不再 `chat.error`）；`MAX_AGENT_STEPS` 默认 6 → 12。
+- [x] plan 硬门禁：`hooks.beforeTool` 拦未确认计划的 `render` / `call_page_method`（`PLAN_GATE=off` 可降级为只提醒）。
+- [x] 回合边界统一：计划确认 / 澄清提问 / 进度交接 → `session.plan` / `session.pendingQuestion` + `chat.plan` / `chat.ask`，用户回应走 `chat.send(planId / questionId)`。
+- [x] prompt 注入：本轮模式与门禁状态、当前计划与进度、上一个提问与回答 + 规则 10~14。
+- [x] chat-client：`PlanCard` / `AskCard` / `ModeSwitch` + `lib/turnState.ts`（纯函数状态机）+ 两条渲染面接线。
+- [ ] 后续（若需要）：服务端**自动接力**（`AUTO_CONTINUE_MAX_TURNS`：run 结束自动起下一轮）；`MODE_CLASSIFIER=llm` 的判定层 4。
+- [x] 计划的**在线编辑**（2026-09 补上，`add-interactive-plan-revision`）：计划卡「修改计划」→ `chat.send(revisePlanId)` → `revise_plan` 按 step id **增量合并**（`planId` 不变、`revision+1`、进度不丢），修订轮硬拦 `propose_plan`；改完重新确认（清 `approvedAt`）；「重新生成计划」保留全量重来。
+
+## 5. 数据上报（原「Runtime 透明观察」—— 已改向）
 目录：`/Users/lvdongzhou/codePersonal/webassistant/packages/wc-runtime-core/`
 
 **决定（已实施）**：不做透明观察。`NetworkObserver`（包装 `window.fetch` / `XMLHttpRequest` 全量观测）

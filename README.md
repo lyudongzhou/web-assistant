@@ -67,5 +67,12 @@ pnpm preview:ce      # → http://localhost:8080/ （= wc-demo.html）
 6. **一份清单、两条渲染面**：`wc.pages.json` → **一份** `manifest.json`（容器形状）。容器面（用法 A）读其中的
    `containers` / `pages[].bundle`；宿主直连面（用法 B）只读页面目录，WC 资产由 core 归一化为空
    （`forHostSurface`）。因此没有第二份清单、也没有第二次分析命令。
+7. **模式与回合边界**：`act` / `plan` / `auto`（默认，服务端判：显式 > 启发式 > 模型自判）。
+   复杂任务先 `propose_plan` 出计划卡 → 用户确认 → 分轮推进；信息不足时 `ask_user` 弹问题卡。
+   计划卡上的「修改计划」是**交互式增量修订**（`chat.send` 带 `revisePlanId` → `revise_plan`
+   按 `step.id` 合并，`planId` 不变、进度不丢、改完需重新确认）；想推倒重来才用「重新生成计划」。
+   三件事（计划确认 / 提问 / 进度交接）共用一套"收尾工具 + 下一次 `chat.send`"的回合边界，
+   因此单轮步数用尽**只是"暂停"**（可继续），不再是一条红色错误。详见
+   [PROJECT.md §6.10](./PROJECT.md) 与 [docs/agent-session.md §4.6 / §4.7](./docs/agent-session.md)。
 
 详细设计与踩坑记录见 [PROJECT.md](./PROJECT.md)；各包契约见各自 README。

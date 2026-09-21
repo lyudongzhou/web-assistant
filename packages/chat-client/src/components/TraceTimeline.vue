@@ -4,25 +4,29 @@
          - 默认收起（dock 空间宝贵），标题带步数 / 进行中 / 失败 / 本轮耗时
          - 展开后每步一行，带状态点（✓ / ✗ / ◐）+ 耗时，点开看 args / result
          - runtime 活动（activityBus）与 agent 步骤**合并去重**，同一步不会出现两行
-       无内容时整个组件不渲染（纯对话的一轮不该冒出一个空过程区）。 -->
-  <section v-if="rows.length || loading" class="trace">
-    <div class="trace-head">
-      <button class="toggle" type="button" @click="open = !open">
-        <span class="chev">{{ open ? '▾' : '▸' }}</span>
-        <span class="title">过程</span>
-        <span v-if="metaText" class="meta">{{ metaText }}</span>
-      </button>
-      <span class="spacer"></span>
+       壳（分隔线 / 折叠头 / chevron / 状态行）来自 <PanelSection>：与计划卡共用同一套样式与收缩逻辑。
+       无内容时整个面板不渲染（纯对话的一轮不该冒出一个空过程区）。 -->
+  <PanelSection
+    v-if="rows.length || loading"
+    class="trace"
+    :open="open"
+    :toggle-title="open ? '收起过程' : '展开过程'"
+    @toggle="toggle"
+  >
+    <template #head>
+      <span class="title">过程</span>
+      <span v-if="metaText" class="meta">{{ metaText }}</span>
+    </template>
+    <template #head-actions>
       <button v-if="showClear && clearable" class="link" type="button" @click="emit('clear')">清空</button>
-    </div>
-
-    <!-- 流式期间的活动指示器：**就在这里**，不再另开一个「思考中…」气泡 -->
-    <div v-if="loading" class="thinking">
+    </template>
+    <!-- 流式期间的活动指示器：**就在这里**（状态行不随折叠收起），不再另开一个「思考中…」气泡 -->
+    <template v-if="loading" #status>
       <span class="dot running">◐</span>
       <span>思考中…</span>
-    </div>
+    </template>
 
-    <ol v-if="open && rows.length" class="list">
+    <ol class="list">
       <li v-for="row in rows" :key="row.key" class="row" :class="row.type">
         <template v-if="row.type === 'item'">
           <button class="row-main" type="button" @click="toggleDetail(row.key)">
@@ -46,18 +50,21 @@
         </p>
       </li>
     </ol>
-  </section>
+  </PanelSection>
 </template>
 
 <script setup lang="ts">
 // 与 <HostAssistantActivities>（旧的「本轮动作」折叠条）的关系：
 // 那个只吃 runtime 的 activities（页面级动作），看不到 agent 的对话级步骤（含"在当前页之外"的思考与失败）；
 // 这个把 **agent 步骤 + runtime 活动** 合成一条时间轴并去重，是它的超集。
-// 纯逻辑（分流 / 配对 / 合并 / 排序）都在 lib/chatTrace.ts，这里只管渲染。
+// 纯逻辑（分流 / 配对 / 合并 / 排序）都在 lib/chatTrace.ts，这里只管渲染；
+// 面板壳与折叠逻辑来自 <PanelSection> + `usePanelOpen`（与计划卡同一套）。
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '../types.js'
 import type { WcActivity } from '../types.js'
 import { formatActivityDetail, formatActivityTime } from '../lib/activities.js'
+import { usePanelOpen } from '../composables/usePanelOpen.js'
+import PanelSection from './PanelSection.vue'
 import {
   TRACE_VISIBLE_LIMIT,
   buildTraceRows,
@@ -105,7 +112,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{ clear: [] }>()
 
-const open = ref(props.defaultOpen)
+/** 折叠：与计划卡共用同一份逻辑（本面板不需要"换内容重置"，过程是一条连续时间轴） */
+const { open, toggle } = usePanelOpen(props.defaultOpen)
 /** 展开了详情的那一行（以 key 为键；新动作插入后 key 稳定，不会跳到别的行上） */
 const openKey = ref<string | null>(null)
 
@@ -161,49 +169,8 @@ function detail(item: TimelineItem): string {
 </script>
 
 <style scoped>
-.trace {
-  border-top: 1px solid var(--wa-border, #e5e7eb);
-  background: var(--wa-trace-bg, var(--wa-bg, #f9fafb));
-  color: var(--wa-trace-text, var(--wa-text-secondary, #6b7280));
-}
-.trace-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-}
-.toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-}
-.chev {
-  font-size: 10px;
-  color: var(--wa-text-muted, #9ca3af);
-}
-.title {
-  font-size: 12px;
-  font-weight: 600;
-}
-.meta {
-  font-size: 11px;
-  color: var(--wa-text-muted, #9ca3af);
-}
-.meta + .meta::before,
-.title + .meta::before {
-  content: '·';
-  margin-right: 6px;
-}
-.spacer {
-  flex: 1;
-}
+/* 壳（分隔线 / 折叠头 / chevron / 状态行 / 标题与 meta 的字号层级）都在 <PanelSection> ——
+   这里只剩"过程内容"自己的样式（时间轴行 / 详情 / 思考与错误块 / 清空链接） */
 .link {
   font: inherit;
   font-size: 12px;
@@ -216,21 +183,12 @@ function detail(item: TimelineItem): string {
 .link:hover {
   color: var(--wa-primary, #3b82f6);
 }
-/* 活动指示器：无内容时也渲染（agent 正在想但还没动手的那段空白期） */
-.thinking {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 12px 6px;
-  font-size: 12px;
-  color: var(--wa-text-muted, #9ca3af);
-}
 .list {
   margin: 0;
   padding: 0 0 6px;
   list-style: none;
-  max-height: 200px;
-  overflow-y: auto;
+  /* 限高 + 内部滚动由壳的 `.panel-body` 统一给（`--wa-panel-body-max`）：
+     过程区与计划卡同一套口径（以前只有这里写了 max-height: 200px，计划卡没有）。 */
 }
 .row {
   padding: 0 12px;

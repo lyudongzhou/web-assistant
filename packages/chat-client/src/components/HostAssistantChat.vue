@@ -33,7 +33,6 @@
          流式期间的活动指示器也在里面 —— 不再另开一个「思考中…」气泡（那是重复提示）。 -->
     <TraceTimeline
       v-if="showTrace"
-      class="trace-panel"
       :items="trace"
       :activities="activities"
       :include-activities="includeActivities"
@@ -41,6 +40,22 @@
       :duration-ms="traceDurationMs"
       :loading="loading"
     />
+
+    <!-- 回合边界的交互卡（计划 / 提问）：固定在过程区与输入栏之间，不随消息区滚动 -->
+    <PlanCardView
+      v-if="plan"
+      :plan="plan"
+      :disabled="loading"
+      @approve="emit('approve-plan', $event)"
+      @open-revision="emit('revision-open')"
+      @revision-input="emit('revision-input', $event)"
+      @cancel-revision="emit('revision-cancel')"
+      @revise="emit('revise')"
+      @replan="emit('replan')"
+    />
+    <AskCardView v-if="ask" :ask="ask" :disabled="loading" @answer="onAnswer" />
+
+    <ModeSwitch v-if="showModeSwitch" :mode="mode" @change="emit('change-mode', $event)" />
 
     <!-- Enter 监听挂在**外层原生 div** 上：键盘事件从内部 textarea 冒泡上来，必然触发 -->
     <div class="input-bar" @keydown="onKeydown">
@@ -61,9 +76,15 @@
 //   ③ 空态是**可点的建议**（直接来自宿主自己的业务能力），不是一句写死的提示语
 // 保持 `ChatPanel` 原样 ⇒ 容器面（用法 A）的 DOM 与样式零回归。
 import { nextTick, computed, ref, useTemplateRef, watch } from 'vue'
+import type { AgentMode } from '@webassistant/protocol'
+import type { ChatModeMessage } from '@webassistant/protocol/websocket'
 import type { ChatMessage, WcActivity } from '../types.js'
 import { splitMessages } from '../lib/chatTrace.js'
+import type { AskCard, PlanCard } from '../lib/turnState.js'
 import TraceTimeline from './TraceTimeline.vue'
+import PlanCardView from './PlanCard.vue'
+import AskCardView from './AskCard.vue'
+import ModeSwitch from './ModeSwitch.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -90,6 +111,14 @@ const props = withDefaults(
     activities?: WcActivity[]
     /** 是否把 runtime 活动并进过程区（缺省 true） */
     includeActivities?: boolean
+    /** 当前计划卡（`chat.plan`）；null = 没有待确认/执行中的计划 */
+    plan?: PlanCard | null
+    /** 当前问题卡（`chat.ask`）；null = 没有待回答的问题 */
+    ask?: AskCard | null
+    /** 最近一次模式判定（`chat.mode`），供 ModeSwitch 显示生效模式与判定来源 */
+    mode?: ChatModeMessage | null
+    /** 是否渲染模式切换（缺省渲染） */
+    showModeSwitch?: boolean
   }>(),
   {
     messages: () => [],
@@ -103,13 +132,36 @@ const props = withDefaults(
     traceDurationMs: undefined,
     activities: () => [],
     includeActivities: true,
+    plan: null,
+    ask: null,
+    mode: null,
+    showModeSwitch: true,
   },
 )
 
 const emit = defineEmits<{
   send: [text: string]
   cancel: []
+  /** 计划卡「开始执行」：宿主把它转成 `confirmPlan(plan)`（chat.send 带 planId） */
+  'approve-plan': [plan: PlanCard]
+  /** 计划卡「修改计划」：展开输入的三个事件（宿主转成 turnState 的草稿态迁移） */
+  'revision-open': []
+  'revision-input': [draft: string]
+  'revision-cancel': []
+  /** 提交修改意见：宿主把它转成 `revisePlan(plan.draft, plan)`（chat.send 带 revisePlanId） */
+  revise: []
+  /** 计划卡「重新生成计划」：推倒重来（宿主发一句话让模型重新 propose_plan） */
+  replan: []
+  /** 问题卡选项被点：宿主把它转成一次带 questionId 的发送 */
+  answer: [text: string, questionId: string]
+  /** 模式切换（宿主把它记下来，下一轮随 send 带上） */
+  'change-mode': [mode: AgentMode]
 }>()
+
+/** 问题卡选项 → answer 事件（把 questionId 一起带出去，避免宿主再去查卡片） */
+function onAnswer(text: string, questionId: string): void {
+  emit('answer', text, questionId)
+}
 
 /** 过程 / 结果分流（规则在 lib/chatTrace.ts，纯逻辑可单测） */
 const split = computed(() => splitMessages(props.messages))
@@ -235,10 +287,8 @@ watch(
   border: 1px solid var(--wa-border, #e5e7eb);
   border-bottom-left-radius: 4px;
 }
-/* 过程区：固定在消息区与输入栏之间，不参与消息区的滚动 */
-.trace-panel {
-  flex: 0 0 auto;
-}
+/* 过程区 / 计划卡都固定在消息区与输入栏之间，不参与消息区的滚动 ——
+   `flex: 0 0 auto` 现在由共用壳（`PanelSection` 的 `.panel`）统一给，两条渲染面不再各写一份。 */
 .input-bar {
   display: flex;
   align-items: flex-end;

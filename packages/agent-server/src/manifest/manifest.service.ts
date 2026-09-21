@@ -12,6 +12,7 @@ import type {
   WelcomeCapability,
   WelcomePayload,
 } from '@webassistant/protocol'
+import { PLAN_HINT } from '../agent/mode.js'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -135,7 +136,7 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     return lines.join('\n')
   }
 
-  buildAgentContext(session?: Pick<AgentSession, 'currentPage' | 'pageExposedKeys' | 'recentObservations'>): string {
+  buildAgentContext(session?: Pick<AgentSession, 'currentPage' | 'pageExposedKeys' | 'recentObservations' | 'modeDecision' | 'plan' | 'planTurn' | 'pendingQuestion'>): string {
     const manifest = this.getManifest()
     const lines = ['你是一个网页助手，需要根据用户目标选择并操作页面。', '', '可用页面：']
     for (const page of manifest.pages) {
@@ -203,12 +204,78 @@ export class ManifestService implements OnModuleInit, OnModuleDestroy {
     lines.push('   例：call_page_method({ name: "nextPage" })；call_page_method({ name: "openCreateDialog", args: [{ name: "订单库", host: "10.0.0.9", port: 3306 }] })')
     lines.push('8. 页面方法只用来「打开 / 预填 / 翻页 / 筛选 / 导航」：保存、新增、删除等写后端的动作不在可调用方法里，必须请用户在页面上确认提交；预填后要明确告诉用户「已填好，请确认」。')
     lines.push('9. render 的 params 同时承载两种入参通道：清单里未标注的是路径参数（进 URL 路径），标注为「查询参数」的会下发成 ?key=value；两者都放进同一个 params 对象，不要改用 props 传参数，也不要自己拼 path 或 query 串。')
+    lines.push('10. 任务需要多步（跨多个页面 / 多次操作 / 需要汇总对比）或信息不足时，**先给出计划**：调用 propose_plan 拆成 1~8 步。计划模式下一句话的任务不要拆（直接做）；**直接执行模式（见「本轮模式」段）下不要出计划**。')
+    lines.push('11. 调用 propose_plan 后本轮立即结束、等用户确认；用户确认前不要操作页面（计划模式下会被拒绝执行）。')
+    lines.push('12. 信息不足且无法从页面数据中得到时，用 ask_user 提问（2~5 个选项，一次只问一个）；不要猜测业务参数，也不要用它问"是否继续"这类客套话。')
+    lines.push('13. 一轮最多推进计划的 2~3 步：做完就调用 finish_turn 交接进度（done 填已完成的步骤 id），让用户能看到进展并决定是否继续。')
+    lines.push('14. 步数快用完时（系统会提前一步提醒）优先调用 finish_turn 收尾，不要开启新的页面操作；整件事做完时用 doneAll=true。')
+    lines.push('15. 用户对**当前计划**提修改意见时（见「本轮是计划修改」段）必须调用 revise_plan，并回填**修订后的完整步骤序列**：未改动的步骤原样带回它的 id 与标题（否则会被当成"删掉再加一个"，已完成状态与进度就丢了），新增的步骤不要带 id，要删除的步骤不要出现在 steps 里，改到已完成的步骤时对它传 reopen:true。**不要**因为一句修改意见就换一份新计划（那会清空进度）。')
 
     // 项目规则：随 manifest 下发（wc.pages.json 的 rules 自动收集），优先于上面的通用规则。
     const projectRules = this.getRules().filter((rule) => !rule.disabled)
     if (projectRules.length) {
       lines.push('', '项目规则（来自本项目 manifest，优先于上面的通用规则；冲突时以项目规则为准）：')
       for (const rule of projectRules) lines.push(`- [${rule.name}] ${rule.instructions}`)
+    }
+
+    // 本轮模式与计划门禁状态（由 agent.service 的 decideMode 写入 session）
+    const decision = session?.modeDecision
+    if (decision) {
+      const label = decision.effective === 'plan' ? '计划模式' : '直接执行模式'
+      lines.push('', `[本轮模式] ${label}（请求值：${decision.requested}，判定来源：${decision.decidedBy}${decision.reason ? `，理由：${decision.reason}` : ''}）`)
+      if (decision.effective === 'plan') {
+        const approved = session?.plan?.approvedAt != null && session?.plan?.status !== 'superseded'
+        lines.push(
+          approved
+            ? '  计划已由用户确认 —— 可以按计划操作页面；一轮推进 2~3 步后调用 finish_turn 交接。'
+            : `  计划尚未确认 —— render / call_page_method 会被拒绝执行。请先用 propose_plan 给出计划。（${PLAN_HINT}）`,
+        )
+      } else {
+        // act 模式下不要出计划卡：用户显式选了"直接执行"（或启发式判定为单页直做）——
+        // 这时再弹一张"要不要开始"的卡是把选择权又塞回给用户。需要多步就直接做、用 finish_turn 交接。
+        lines.push('  用户要的是直接执行 —— **不要调用 propose_plan**；直接操作页面，一轮推进不完就用 finish_turn 交接进度。')
+      }
+    }
+
+    // 本轮的"修改计划"意图（`chat.send.revisePlanId`）：必须在当前计划段之前说清楚
+    // 「用户是在改这一份，不是在要一份新的」，否则模型很容易顺手 propose_plan 把进度清掉。
+    const planTurn = session?.planTurn
+    if (planTurn) {
+      lines.push('', `[本轮是计划修改] 用户对当前计划（planId=${planTurn.planId}）提出了修改意见：`)
+      lines.push(`  ${planTurn.text}`)
+      lines.push(
+        '  必须调用 revise_plan 把修改意见落到计划上（不能用 propose_plan 换新计划）：' +
+          '回填**修改后的完整步骤序列**，未改动的步骤原样带回它的 id 与标题，' +
+          '新增的步骤不要带 id，要删除的步骤不要出现在 steps 里，改到已完成的步骤时对它传 reopen:true。',
+      )
+    }
+
+    // 当前计划与进度（计划式分轮推进的"锚点"：没有它，下一轮只能靠模型自己回忆做到哪了）
+    const plan = session?.plan
+    if (plan && plan.status !== 'superseded') {
+      const done = plan.steps.filter((step) => step.status === 'done')
+      const version = plan.revision && plan.revision > 1 ? `；已修订 ${plan.revision - 1} 次（当前第 ${plan.revision} 版）` : ''
+      lines.push('', `[当前计划 ${plan.id}] ${plan.summary}（状态：${plan.status}${version}）`)
+      for (const step of plan.steps) {
+        lines.push(`  ${step.status === 'done' ? '[x]' : '[ ]'} ${step.id} ${step.title}${step.detail ? `（${step.detail}）` : ''}`)
+      }
+      lines.push(
+        done.length === plan.steps.length
+          ? '  计划已全部完成。'
+          : `  已完成 ${done.length}/${plan.steps.length}；finish_turn 的 done 请填这些步骤 id：${plan.steps.filter((s) => s.status === 'pending').map((s) => s.id).join('、')}`,
+      )
+    }
+
+    // 上一个提问与用户的回答（提问是"回合边界"：回答在下一条用户消息里，必须显式对上）
+    const question = session?.pendingQuestion
+    if (question) {
+      lines.push('', '[最近的提问]')
+      lines.push(`  你问了：${question.question}（选项：${question.options.join(' / ')}）`)
+      lines.push(
+        question.answeredAt
+          ? `  用户已回答：${question.answer ?? ''}`
+          : '  用户还没回答 —— 等他回答，不要重复提问，也不要猜答案。',
+      )
     }
 
     // 当前页 + 最新 expose 能力（运行时维度）

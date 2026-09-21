@@ -135,18 +135,65 @@ export class AgentGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void {
     const session = this.findSession(client)
     if (!session) return
-    this.logger.log(`chat.send session=${session.id} text="${truncate(message.text)}"`)
+    this.logger.log(
+      `chat.send session=${session.id} mode=${message.mode ?? '-'} planId=${message.planId ?? '-'} revisePlanId=${message.revisePlanId ?? '-'} questionId=${message.questionId ?? '-'} text="${truncate(message.text)}"`,
+    )
     // 同一会话串行：长驻 agent runtime 正在跑时拒绝新的一轮（不再允许并发 run）。
     if (this.agents.isRunning(session.id)) {
       this.logger.warn(`chat.send session=${session.id} 拒绝：上一轮仍在进行中`)
       this.rpc.notify(session.id, { t: 'chat.error', message: '上一轮仍在进行中，请等它结束后再发送。' })
       return
     }
-    void this.agents.run(session.id, message.text).catch((error: unknown) => {
+    // 回合边界的"用户回应"必须先落到 session 上，再起本轮 run —— 顺序反了会出两个问题：
+    // ① 计划确认晚于本轮第一次 render → 会被 plan 门禁拦下（approvedAt 还是空的）；
+    // ② 回答没记上 → 同一问题在下一轮被重复提问。
+    // 「修改计划」（revisePlanId）不在这里落 session：它要等本轮 run 拿到 planId 后由
+    // `AgentService.run()` 写成 `session.planTurn`（需要验证卡片是否过期）。
+    this.resolveTurnEndInput(session, message)
+    void this.agents.run(session.id, message.text, {
+      ...(message.mode ? { mode: message.mode } : {}),
+      ...(message.planId ? { planId: message.planId } : {}),
+      ...(message.revisePlanId ? { revisePlanId: message.revisePlanId } : {}),
+      ...(message.questionId ? { questionId: message.questionId } : {}),
+    }).catch((error: unknown) => {
       const reason = errorText(error)
       this.logger.error(`chat.send session=${session.id} agent run failed: ${reason}`)
       this.rpc.notify(session.id, { t: 'chat.error', message: reason })
     })
+  }
+
+  /**
+   * 处理本轮的"用户回应"（计划确认 / 问题回答）。
+   *
+   * - 确认计划：`planId` 命中当前计划才批准；不命中（期间重新规划过）时明确告知用户重新确认，
+   *   而不是默默批准一个新计划。
+   * - 回答提问：带 `questionId` 要匹配；用户直接打字（不带 id）也算回答当前未回答的问题 ——
+   *   否则"我问了一个问题，用户直接说答案"会被当成普通消息，问题一直挂着。
+   */
+  private resolveTurnEndInput(
+    session: AgentSession,
+    message: Extract<ClientMessage, { t: 'chat.send' }>,
+  ): void {
+    if (message.planId) {
+      const outcome = this.sessions.approvePlan(session, message.planId)
+      if (outcome === 'approved') {
+        this.logger.log(`plan approved session=${session.id} planId=${message.planId}`)
+      } else if (outcome === 'stale') {
+        this.logger.warn(`plan approve stale session=${session.id} planId=${message.planId}（当前计划已更新）`)
+        this.rpc.notify(session.id, {
+          t: 'chat.text',
+          delta: '计划已经更新过了，请在上面的计划卡上重新点「开始执行」。',
+          channel: 'text',
+        })
+      }
+      return
+    }
+    const answered = this.sessions.answerQuestion(session, message.text, message.questionId)
+    if (answered) {
+      this.logger.log(`question answered session=${session.id} questionId=${session.pendingQuestion?.id}`)
+    } else if (message.questionId) {
+      this.logger.warn(`question answer stale session=${session.id} questionId=${message.questionId}`)
+    }
   }
 
   @SubscribeMessage('chat.cancel')

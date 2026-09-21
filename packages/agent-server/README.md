@@ -140,7 +140,9 @@ docker run --rm -p 3000:3000 \
 | `HTTP_PROXY` | 否* | — | 服务器无法直连公网时必填，DeepSeek 请求走该 HTTP 代理 |
 | `HTTPS_PROXY` | 否* | — | 同上（值仍用 `http://` 代理地址，HTTPS 走 CONNECT 隧道） |
 | `NO_PROXY` | 否* | — | 不走代理的地址列表，须包含 manifest 主机与 `localhost` |
-| `MAX_AGENT_STEPS` | 否 | `6` | 单轮 ReAct 最大步数 |
+| `MAX_AGENT_STEPS` | 否 | `12` | 单轮 ReAct 最大步数（用尽 = 「已暂停」，不是失败：会推一条提示并保留进度，用户回复"继续"即可接着做） |
+| `MODE_DEFAULT` | 否 | `auto` | 默认模式：`auto`（服务端判定：显式 > 启发式 > 模型自判）/ `act`（直接执行）/ `plan`（先出计划）；非法值回落 `auto` |
+| `PLAN_GATE` | 否 | `hard` | `plan` 模式下未确认计划时的页面操作：`hard` 直接拒绝执行（`render` / `call_page_method` 不生效），`off` 只提示不拦 |
 | `TOOL_CALL_TIMEOUT_MS` | 否 | `8000` | 单次 `tool.call`（`render` / `call_page_method`）超时 |
 | `OBSERVATION_WAIT_TIMEOUT_MS` | 否 | `10000` | `wait_for_observation` 等待观测的默认超时（也是上限） |
 | `AGENT_RUN_TIMEOUT_MS` | 否 | `60000` | 单轮 agent run 的总时长上限 |
@@ -203,6 +205,31 @@ export DEEPSEEK_API_KEY=sk-xxx     # 或创建 .env.deploy
 ```
 
 脚本会依次执行：`scp` 上传 tar.gz → 服务器 `docker load` → `docker rm -f` + `docker run`（默认已带 `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` 与 `MANIFEST_INSECURE_TLS=1`）→ 打印容器状态与 `/health`。
+
+## 冒烟 / 端到端验收（真调模型）
+
+三个脚本都是「模拟 chat-client」的 ws 客户端，需要**先起好服务**（默认连 `ws://localhost:3987/ws`，用 `WS_URL` 覆盖）：
+
+```bash
+node test/smoke-ws.mjs                                   # 基础链路：render / 观察 / tool.result
+node test/smoke-trace-ws.mjs                             # 过程轨迹：chat.text(reasoning) + agent.step 起止
+node test/smoke-turns.mjs                                # 模式与回合边界（本仓新增）
+
+# 计划式回合：复杂任务 → chat.plan → 确认(planId) → render → finish_turn，全程无 chat.error
+SMOKE_MODE=plan node test/smoke-turns.mjs
+
+# 计划的交互式修改：先不确认、带 revisePlanId 提修改意见 →
+# 断言「同一 planId + revision=2 + 未改动的步骤 id 保留」（改计划 ≠ 换计划），再确认执行
+SMOKE_EXPECT=revise SMOKE_MODE=plan node test/smoke-turns.mjs
+
+# 步数用尽：把上限压到 1 步，验证「降级为已暂停」而不是 chat.error
+#（服务端需以 MAX_AGENT_STEPS=1 启动）
+SMOKE_EXPECT=pause SMOKE_MODE=act SMOKE_ROUNDS=1 \
+  SMOKE_TASK='打开数据源列表看看有哪些数据源' node test/smoke-turns.mjs
+```
+
+可调环境变量：`WS_URL` / `SMOKE_ROUNDS`（跑几轮后收尾）/ `SMOKE_MODE`（`plan` / `act` / `auto`）/
+`SMOKE_TASK` / `SMOKE_EXPECT`（`plan` / `pause` / `ask` / `revise`）/ `SMOKE_REVISE_TEXT`（修订档写下的修改意见）。
 
 ### 健康检查
 

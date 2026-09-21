@@ -8,6 +8,7 @@
 // 早期实现把过程行以 `\n> …\n` 追加进**同一条** assistant 消息的 content 里，
 // 结果 UI 只拿到一根字符串，思考过程与结果在界面上无法分离 —— 那正是本次修复的根因。
 import { computed, ref, shallowRef, type ComputedRef, type Ref } from 'vue'
+import type { AgentMode } from '@webassistant/protocol'
 import type {
   AgentStepMessage,
   ServerMessage,
@@ -17,8 +18,26 @@ import type {
   ActivityAckData,
   WelcomePayload,
 } from '@webassistant/protocol/websocket'
-import type { AgentSocket } from '../lib/agentSocket.js'
+import type { AgentSocket, ChatSendOptions } from '../lib/agentSocket.js'
 import type { ChatMessage } from '../types.js'
+import {
+  applyAsk,
+  applyMode,
+  applyPlan,
+  approvePlanCard,
+  answerAskCard,
+  // 纯函数与 composable 暴露的动作同名：这里别名成 *State，避免局部函数把自己递归调回去
+  beginPlanRevision as beginPlanRevisionState,
+  cancelPlanRevision as cancelPlanRevisionState,
+  createTurnState,
+  pendingQuestionId,
+  settlePlanRevision,
+  submitPlanRevision as submitPlanRevisionState,
+  updatePlanDraft as updatePlanDraftState,
+  type AskCard,
+  type PlanCard,
+  type TurnState,
+} from '../lib/turnState.js'
 import {
   appendStream,
   pushStep,
@@ -67,8 +86,36 @@ export interface UseAgentChatReturn {
    * 欢迎页用它判断「欢迎内容的数据源之一已 settle」——未就绪时显示加载态而不是空态提示。
    */
   sessionReady: Ref<boolean>
+  /** 本轮模式判定（`chat.mode`）—— 状态行显示「当前模式 · 判定来源」 */
+  mode: ComputedRef<TurnState['mode']>
+  /** 当前计划卡（`chat.plan`；批准后 status 变 approved） */
+  plan: ComputedRef<PlanCard | null>
+  /** 当前问题卡（`chat.ask`；回答后有 answer） */
+  ask: ComputedRef<AskCard | null>
   /** 发送用户消息（会通过 socket.sendChat 发出） */
   send: (input: string) => void
+  /**
+   * 发起一轮并显式带上附加指令（用于：确认计划 / 按模式发送）。
+   * 与 `send` 的区别：`send` 会自动带上"待回答问题 id"（用户直接打字回答的常见路径）。
+   */
+  sendWith: (input: string, options?: ChatSendOptions) => void
+  /** 确认计划（计划卡的「开始执行」）：发送一条带 planId 的消息 */
+  confirmPlan: (plan?: PlanCard) => void
+  /** 展开「修改计划」输入框（计划卡的「修改计划」） */
+  beginPlanRevision: (planId: string) => void
+  /** 修改意见输入变化 */
+  updatePlanDraft: (draft: string) => void
+  /** 取消修改（收起输入框） */
+  cancelPlanRevision: () => void
+  /**
+   * 提交修改意见（计划卡的「提交修改」）：发送一条带 `revisePlanId` 的消息。
+   * 服务端据此把本轮标成"修订轮"，模型调 `revise_plan` 在本计划上增量合并（进度不丢）。
+   */
+  revisePlan: (input: string, plan?: PlanCard) => void
+  /** 重新生成计划（全量重来，走 propose_plan） */
+  replan: () => void
+  /** 切换模式并立刻以新模式发一轮（ModeSwitch 用） */
+  sendWithMode: (mode: AgentMode, input: string) => void
   /** 取消当前 agent run */
   cancel: () => void
   reset: () => void
@@ -97,6 +144,12 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
   const cursors: Record<StreamChannel, number> = { message: -1, reasoning: -1 }
   /** 本轮 run 总耗时（`chat.done.durationMs`），供过程区标题显示 */
   const turnDurationMs = ref<number | undefined>(undefined)
+  /**
+   * 回合边界状态（模式 / 计划卡 / 问题卡）。
+   * 用 `shallowRef` + 纯函数更新（`lib/turnState.ts`）：状态迁移规则全部可单测，
+   * 组件只负责渲染与派发事件。
+   */
+  const turn = shallowRef<TurnState>(createTurnState())
 
   /** 一段流结束（新一段另起气泡） */
   function endStreams(): void {
@@ -129,12 +182,27 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         // 过程步骤：独立成条 + 按 phase 就地结算 —— 不与结果正文共用游标
         appendStep(message)
         break
+      case 'chat.mode':
+        // 每轮开头的判定结果：状态行显示「当前模式 · 判定来源」
+        turn.value = applyMode(turn.value, message)
+        break
+      case 'chat.plan':
+        // 计划卡：proposed（等用户确认）/ approved（执行中）**由服务端 `status` 决定**；
+        // 修订（同 planId 再次下发）也是走这里 —— 卡片原地刷新，并退出"修改中"
+        turn.value = applyPlan(turn.value, message)
+        break
+      case 'chat.ask':
+        // 问题卡：等用户点选项或直接打字；回答后卡片转为「已回答」
+        turn.value = applyAsk(turn.value, message)
+        break
       case 'tool.call':
         void handleToolCall(message)
         break
       case 'chat.done':
         loading.value = false
         turnDurationMs.value = message.durationMs
+        // 本轮结束：修订中的标记收尾（正常路径已由 chat.plan 清掉，这里兜"失败/自然结束"）
+        turn.value = settlePlanRevision(turn.value)
         // 结束当前流：下一次 chat.text 另起一条消息
         // （server 主动推送的欢迎语等在「上一轮结束后」到达，必须另起气泡而不是追加）
         endStreams()
@@ -143,6 +211,7 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
         // 错误进过程区：结果气泡只放"答复"，把 run 级失败混进去会让人以为那是 agent 的回答
         messages.value.push({ role: 'assistant', content: message.message, kind: 'error', at: Date.now() })
         loading.value = false
+        turn.value = settlePlanRevision(turn.value)
         endStreams()
         break
     }
@@ -237,7 +306,91 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     loading.value = true
     endStreams()
     turnDurationMs.value = undefined
-    socket.sendChat(message)
+    // 正在等回答时，用户直接打字 = 回答那个问题：带上 questionId 让服务端把问题标记为已回答
+    //（不带也能被服务端认下，但带上才能让"旧问题卡"与"新任务"区分开）
+    const questionId = pendingQuestionId(turn.value)
+    if (questionId) turn.value = answerAskCard(turn.value, message, questionId)
+    socket.sendChat(message, { ...(questionId ? { questionId } : {}) })
+  }
+
+  /**
+   * 带附加指令发送（确认计划 / 指定模式 / 提交修改意见）；与 `send` 共用 loading 与流游标的重置。
+   * 返回是否**真的发出去了**（离线 / 正在跑一轮时返回 false）——调用方据此决定要不要做本地状态迁移
+   * （例如「提交修改」不能在没发出去的情况下把卡片标成"修改中"）。
+   */
+  function sendWith(input: string, chatOptions: ChatSendOptions = {}): boolean {
+    const message = input.trim()
+    if (!message || loading.value) return false
+    const socket = options.socket()
+    if (!socket || !socket.connected) {
+      messages.value.push({ role: 'assistant', content: '[无法连接 agent-server]', kind: 'error', at: Date.now() })
+      return false
+    }
+    messages.value.push({ role: 'user', content: message, at: Date.now() })
+    loading.value = true
+    endStreams()
+    turnDurationMs.value = undefined
+    if (chatOptions.planId) turn.value = approvePlanCard(turn.value, chatOptions.planId)
+    if (chatOptions.questionId) {
+      turn.value = answerAskCard(turn.value, message, chatOptions.questionId)
+    }
+    socket.sendChat(message, chatOptions)
+    return true
+  }
+
+  /**
+   * 计划卡的「开始执行」。
+   * 文案固定成一句"开始执行"（而不是把计划正文塞回去）：计划本身已经在服务端的会话里，
+   * 模型靠 prompt 里的「当前计划」段落就知道要做什么，重发一遍反而容易与计划产生分歧。
+   */
+  function confirmPlan(plan?: PlanCard): void {
+    const card = plan ?? turn.value.plan
+    if (!card || card.status === 'approved') return
+    sendWith('开始执行计划', { planId: card.message.planId })
+  }
+
+  /** 展开「修改计划」输入框 */
+  function beginPlanRevision(planId: string): void {
+    turn.value = beginPlanRevisionState(turn.value, planId)
+  }
+
+  /** 修改意见输入变化 */
+  function updatePlanDraft(draft: string): void {
+    turn.value = updatePlanDraftState(turn.value, draft)
+  }
+
+  /** 收起输入框（丢弃草稿） */
+  function cancelPlanRevision(): void {
+    turn.value = cancelPlanRevisionState(turn.value)
+  }
+
+  /**
+   * 提交修改意见。
+   *
+   * 关键差异（与 `replan` 相比）：这条消息带 `revisePlanId`，表达的是"**改这一份计划**"——
+   * 服务端据此标记修订轮，模型用 `revise_plan` 增量合并（未改动的步骤保留 id 与完成状态，
+   * 进度不丢、planId 不变）。而旧的「重新规划」只是发一句固定文案去"换一份新计划"。
+   */
+  function revisePlan(input: string, plan?: PlanCard): void {
+    const card = plan ?? turn.value.plan
+    const message = input.trim()
+    if (!card || !message) return
+    // 先发再标"修改中"：没发出去（离线 / 正在跑一轮）时不要动卡片状态，
+    // 否则这条提示会一直挂着（服务端的修订结果永远回不来）。
+    if (!sendWith(message, { revisePlanId: card.message.planId })) return
+    turn.value = submitPlanRevisionState(turn.value, card.message.planId)
+  }
+
+  /** 重新生成计划：全量重来（`propose_plan` 路径），旧计划会被标为 superseded */
+  function replan(): void {
+    // 这句话不带 revisePlanId ⇒ 本轮不是修订轮 ⇒ 模型可以 propose_plan 出新计划。
+    // 与「修改计划」的区别必须在文案里说清，否则模型可能只是又改一遍原计划。
+    send('这份计划整体不合适，请推翻它、重新生成一版（不要在原计划上改）')
+  }
+
+  /** 切换模式并立刻发一轮（用户在 ModeSwitch 上选完模式后说一句） */
+  function sendWithMode(mode: AgentMode, input: string): void {
+    sendWith(input, { mode })
   }
 
   function cancel(): void {
@@ -250,6 +403,9 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     endStreams()
     turnDurationMs.value = undefined
     loading.value = false
+    // 会话 = 连接：重连/新会话意味着服务端的计划、提问与模式都不存在了 —— 本地卡片必须一起清掉，
+    // 否则用户会对着"上一辈子"的计划卡点「开始执行」（服务端只会回"计划已更新"）。
+    turn.value = createTurnState()
   }
 
   /**
@@ -283,6 +439,10 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
   const trace = computed(() => split.value.trace)
   /** 过程区折叠标题：步数 / 进行中 / 失败 / 本轮耗时 */
   const traceSummary = computed(() => summarizeTrace(trace.value, turnDurationMs.value))
+  // 回合边界的三块：模式条 / 计划卡 / 问题卡（状态迁移全在 lib/turnState.ts）
+  const mode = computed(() => turn.value.mode)
+  const plan = computed(() => turn.value.plan)
+  const ask = computed(() => turn.value.ask)
 
   return {
     messages,
@@ -292,7 +452,18 @@ export function useAgentChat(options: UseAgentChatOptions): UseAgentChatReturn {
     loading,
     welcome,
     sessionReady,
+    mode,
+    plan,
+    ask,
     send,
+    sendWith,
+    confirmPlan,
+    beginPlanRevision,
+    updatePlanDraft,
+    cancelPlanRevision,
+    revisePlan,
+    replan,
+    sendWithMode,
     cancel,
     reset,
     startNewSession,

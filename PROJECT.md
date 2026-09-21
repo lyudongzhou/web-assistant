@@ -516,6 +516,53 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
   [packages/demo-app/README.md](./packages/demo-app/README.md)。
 - 设计文档：[openspec/changes/add-host-router-surface](./openspec/changes/add-host-router-surface/)（proposal / design / specs / tasks）。
 
+### 6.10 模式与回合边界（act / plan / auto + 计划 / 提问）
+
+**问题**：单轮 ReAct 有步数上限（`MAX_AGENT_STEPS`）。SDK 打满上限时**抛错**（`Agent runtime exceeded maxIterations`），
+过去被 catch 成 `failed` → `chat.error` —— 复杂任务（"查三张数据源并对比"）在第 6 步**断在半路**，
+用户只能自己再打一句"继续"。**根因不是缺计划，而是"一轮 run 被当成了任务的全部"。**
+
+**两件事一起做**：
+
+| 层面 | 做法 | 关键 API |
+|---|---|---|
+| 不再硬中断 | 收尾工具（`propose_plan` / `ask_user` / `finish_turn`）→ 本轮 `completed` 正常收尾；倒数一步注入收尾提醒；`exceeded maxIterations` 降级为「已暂停」 | `createTool({ lifecycle: { completesRun: true } })`、`hooks.beforeModel → { messages }` |
+| 天然跨多轮 | 计划确认 / 澄清提问 / 进度交接共用**一套回合边界状态机**：收尾工具结束本轮 → 会话记 `plan` / `pendingQuestion` → 推 `chat.plan` / `chat.ask` → 用户回应经 `chat.send(planId / questionId)` 起下一轮 | `AgentRunStatus` 的 `waiting-plan` / `waiting-user`（后者是早就声明却没人用的状态） |
+
+**模式**（`packages/agent-server/src/agent/mode.ts`）：`act` 直接执行 / `plan` 先出计划 / `auto`（默认）由服务端判定 ——
+**显式 > 启发式 > 模型自判**：客户端显式给了就照办；否则用纯函数启发式（多步信号词 / 跨页 / 缺参）；
+再判不了就取"计划倾向"的提示让模型自选。判定结果每轮用 `chat.mode` 下发，UI 状态行显示「当前模式 · 判定来源」。
+
+**plan 硬门禁**（`PLAN_GATE=hard` 默认）：plan 模式下**未确认计划**时，`hooks.beforeTool` 直接 `skip`
+`render` / `call_page_method`（工具不执行，模型收到 `isError` 的 tool-result 并被告知解锁方式）。
+"不许偷偷动手"因此是**服务端保证**，不只靠 prompt。`PLAN_GATE=off` 可降级为只提醒。
+
+**为什么不用**：SDK 的 `mode`（act/plan/search/yolo）只决定**内置工具集**是否装载（read_files / bash / editor…），
+本项目从不装载那些工具，传 `mode` 没有任何效果；`beforeModel: { stop: true }` 会被记成 `aborted`（= 用户取消），
+不适合当"该收尾了"的信号；`completionPolicy.requireCompletionTool` 会额外烧步数（模型不调收尾工具时注入 reminder 并 continue）。
+
+**客户端**：`PlanCard` / `AskCard` / `ModeSwitch` 三个组件 + `lib/turnState.ts`（纯函数状态机、可单测），
+容器面（`ChatPanel`）与宿主直连面（`HostAssistantChat`）共用同一批——避免两条渲染面漂移。
+
+**计划的交互式修订**（`add-interactive-plan-revision`）：计划卡上的「改计划」以前只有一个按钮发**一句固定文案**
+（`send('这个计划不太合适，请重新规划')`）→ 用户说不出"改哪一步"，模型只能再 `propose_plan` →
+新 `planId` + 步骤重新编号 + 旧计划 `superseded` → **已完成步骤的进度全丢**。现在改成一条带输入、带意图、可增量的路径：
+
+| 层 | 做法 |
+|---|---|
+| 意图 | `chat.send` 新增 `revisePlanId`（与 `planId` 确认、`questionId` 回答对称）→ 本轮记 `session.planTurn` |
+| 服务端保证 | 修订轮的 `propose_plan` 被 `hooks.beforeTool` **硬拦**（reason 指引改用 `revise_plan`）——"不许推倒重来"不只靠 prompt |
+| 增量合并 | 新收尾工具 `revise_plan({ note?, summary?, steps:[{id?, title, detail?, reopen?}] })`；`mergePlanRevision` 按 `step.id` 合并：命中 id 原地改（**保状态**）、无 id 新增（取新号）、未出现即删除、顺序以入参为准 |
+| 卡片 | **`planId` 不变**、`revision+1`、`revisedAt` + 变更摘要 `note`；`chat.plan` 新增服务端权威 `status`，客户端**只跟随**（修订会把已批准的计划回落成 `proposed`，本地推不出来） |
+| 安全 | 计划被改动 ⇒ 回到 `proposed` 且**清空 `approvedAt`**（门禁判据就是它，否则"计划改了、门禁还开着"）；`revisePlanId` 与当前计划不符时不动当前计划、提示重新提交 |
+| 出口 | 「修改计划」= 修订（保进度）；「重新生成计划」（弱化链接）= 全量重来，两条路在 UI 与协议上都可区分 |
+| 面板同构 | 过程区与计划卡是**两个同构 panel**（`过程` 在上、`计划` 在下）：壳用共用组件 `PanelSection`、收缩逻辑用共用 `usePanelOpen`（默认值可传 getter）。折叠头都是 `panel-head > panel-toggle > chev + title + meta`（chevron 在左、整行可点、**等高**，行高由壳定死）。**折叠粒度一致：收起 = 只剩折叠头一行** —— 详情与动作条（footer 槽）一起收起，不留常驻按钮行；**默认折叠值跟随状态**（`proposed` 展开 / `approved` 收起，点「开始执行」自动收成一行）；详情限高滚动（`--wa-panel-body-max` 缺省 200px）；`resetKey=planId` ⇒ 修订保留折叠偏好、换计划回该计划的默认 |
+
+真调模型验收：`SMOKE_EXPECT=revise` 要求「同一 `planId` + `revision=2` + 未改动的步骤 id 保留」，实测通过
+（`endedBy: propose_plan → revise_plan → finish_turn`，全程无 `chat.error`）。
+
+- 设计文档：[openspec/changes/add-agent-modes-and-plan-turns](./openspec/changes/add-agent-modes-and-plan-turns/)；协议与状态机详见 [docs/agent-session.md §4.6](./docs/agent-session.md)。
+
 ## 七、关键踩坑与解法
 | 坑 | 现象 | 解法 |
 |---|---|---|
@@ -536,6 +583,8 @@ core 按 `route.framework` 懒建对应容器；每个容器自己的 shadow roo
 | analyzer 解析不了 TS 页面 | 页面改 `<script setup lang="ts">` 后 babel 直接抛错 | `@vue/compiler-sfc` 切块拿 `block.lang`，babel 按需开 `plugins: ['typescript']` |
 | TS 化后 manifest 丢 prop 类型 | `Array as PropType<User[]>` 让 `type` 解析成 `Any` | 解析时剥掉 `TSAsExpression` 再取构造器名；且**页面保留运行时 `defineProps({})` 写法**（类型写法拿不到注释里的 description） |
 | vite 被解析成多个实例 | 插件返回的 `Plugin` 在 demo 侧报「两个同名但无关的类型」 | vite 的 `@types/node` 是可选 peer，版本不同就会分裂实例 → 消费方显式声明同版本 `@types/node`（根 `pnpm-workspace.yaml` 有 overrides 注释） |
+| 「同构面板」只是名义上同构 | 过程区与计划卡共用一个壳，实际却漂移：折叠头不等高（根上的 `line-height` 漏进头行）、折叠粒度不同（过程区收成一行、计划卡还留一条常驻按钮行）、`flex: 0 0 auto` / 透明度各写一份 → 计划一长还被压扁、内容盖住消息区 | 把"同构的那几行"全部收进 `PanelSection`（行高、`flex`、`flex: 0 0 auto`、详情限高滚动），折叠粒度统一成"收起 = 只剩折叠头一行"，默认折叠值用 `usePanelOpen` 的 getter 跟随计划状态（见 `add-interactive-plan-revision` §11） |
+| 折叠头的悬停高亮对 slot 内容不生效 | `.panel-toggle:hover .title` 被编译成 `.title[data-v-壳]`，而 slot 内容只带 `-s` 后缀的 scoped 属性 → 悬停标题不变色（只有 chevron 变色） | 壳里改用 `.panel-toggle:hover :slotted(.title)`（`:slotted()` 可出现在选择器中间，编译成 `.title[data-v-壳-s]`） |
 | 改了 analyzer 源码但产物没变 | `wc-analyze` bin 指向 `dist/`，不会自动重建 | 用根脚本 `pnpm analyze`（先 build 再跑），别直接调 bin |
 | 依赖往 `document.head` 注入样式，WC 里看不到 | CSS-in-JS 的 `<style>` 落在光 DOM，shadow DOM 匹配不到 | `styleShim`：指定包模块前置 `var document = shadowDocument(...)`（Rollup 改名收敛在包内）+ 容器登记 shadow root 为收件人 |
 | 克隆体与源不同步（空 `<style>` + `insertRule`、先挂空后填） | clone 方案下镜像可能滞后成空壳，还要按内容去重（多个包同时空插入会撞车） | 改 clone 为**改道**：库自己的**真节点**直接移进容器 shadow root，`sheet` 天然生效，无需挂钩 / 去重 |

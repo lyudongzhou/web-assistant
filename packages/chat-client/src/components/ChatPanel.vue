@@ -24,12 +24,27 @@
          容器面与宿主直连面用**同一个**组件与同一份分流口径（见 lib/chatTrace.ts），避免两条渲染面漂移。 -->
     <TraceTimeline
       v-if="showTrace"
-      class="trace-panel"
       :items="trace"
       :activities="activities"
       :duration-ms="traceDurationMs"
       :loading="loading"
     />
+
+    <!-- 回合边界的交互卡（计划 / 提问）与模式切换：容器面与宿主直连面共用同一批组件，
+         避免两条渲染面漂移（同 lib/chatTrace.ts 的做法）。 -->
+    <PlanCardView
+      v-if="plan"
+      :plan="plan"
+      :disabled="loading"
+      @approve="emit('approve-plan', $event)"
+      @open-revision="emit('revision-open')"
+      @revision-input="emit('revision-input', $event)"
+      @cancel-revision="emit('revision-cancel')"
+      @revise="emit('revise')"
+      @replan="emit('replan')"
+    />
+    <AskCardView v-if="ask" :ask="ask" :disabled="loading" @answer="onAnswer" />
+    <ModeSwitch v-if="showModeSwitch" :mode="mode" @change="emit('change-mode', $event)" />
 
     <form class="input-bar" @submit.prevent="submit">
       <input
@@ -45,9 +60,15 @@
 
 <script setup lang="ts">
 import { ref, nextTick, computed, watch, useTemplateRef } from 'vue'
+import type { AgentMode } from '@webassistant/protocol'
+import type { ChatModeMessage } from '@webassistant/protocol/websocket'
 import type { ChatMessage, WcActivity } from '../types.js'
 import { splitMessages } from '../lib/chatTrace.js'
+import type { AskCard, PlanCard } from '../lib/turnState.js'
 import TraceTimeline from './TraceTimeline.vue'
+import PlanCardView from './PlanCard.vue'
+import AskCardView from './AskCard.vue'
+import ModeSwitch from './ModeSwitch.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -61,6 +82,14 @@ const props = withDefaults(
     traceDurationMs?: number
     /** runtime 活动（最新在前）——与 agent 步骤合并去重 */
     activities?: WcActivity[]
+    /** 当前计划卡（`chat.plan`） */
+    plan?: PlanCard | null
+    /** 当前问题卡（`chat.ask`） */
+    ask?: AskCard | null
+    /** 最近一次模式判定（`chat.mode`） */
+    mode?: ChatModeMessage | null
+    /** 是否渲染模式切换（缺省渲染） */
+    showModeSwitch?: boolean
   }>(),
   {
     messages: () => [],
@@ -69,6 +98,10 @@ const props = withDefaults(
     showTrace: true,
     traceDurationMs: undefined,
     activities: () => [],
+    plan: null,
+    ask: null,
+    mode: null,
+    showModeSwitch: true,
   },
 )
 
@@ -80,7 +113,25 @@ const trace = computed(() => split.value.trace)
 const emit = defineEmits<{
   (event: 'send', text: string): void
   (event: 'new-session'): void
+  /** 计划卡「开始执行」 */
+  (event: 'approve-plan', plan: PlanCard): void
+  /** 计划卡「修改计划」：展开输入的三个事件（草稿态迁移在宿主的 turnState 上） */
+  (event: 'revision-open'): void
+  (event: 'revision-input', draft: string): void
+  (event: 'revision-cancel'): void
+  /** 提交修改意见（宿主转成 `revisePlan(draft, plan)`，即 chat.send 带 revisePlanId） */
+  (event: 'revise'): void
+  /** 计划卡「重新生成计划」（推倒重来） */
+  (event: 'replan'): void
+  /** 问题卡选项被点 */
+  (event: 'answer', text: string, questionId: string): void
+  /** 模式切换 */
+  (event: 'change-mode', mode: AgentMode): void
 }>()
+
+function onAnswer(text: string, questionId: string): void {
+  emit('answer', text, questionId)
+}
 
 const text = ref('')
 const messagesEl = useTemplateRef<HTMLElement>('messagesEl')
@@ -185,10 +236,8 @@ watch(
   color: var(--wa-text, #1f2937);
   border-bottom-left-radius: 4px;
 }
-/* 过程区：固定在消息区与输入栏之间，不参与消息区的滚动 */
-.trace-panel {
-  flex: 0 0 auto;
-}
+/* 过程区 / 计划卡都固定在消息区与输入栏之间，不参与消息区的滚动 ——
+   `flex: 0 0 auto` 现在由共用壳（`PanelSection` 的 `.panel`）统一给，两条渲染面不再各写一份。 */
 .input-bar {
   display: flex;
   gap: 8px;

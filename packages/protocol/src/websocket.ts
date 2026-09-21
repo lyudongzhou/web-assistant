@@ -5,7 +5,12 @@ import type {
   ObservationMatch,
   PageDataSnapshot,
 } from './observation.js'
-import type { NavigationSource } from './session.js'
+import type {
+  AgentMode,
+  ModeDecision,
+  NavigationSource,
+  PlanStep,
+} from './session.js'
 
 export const CLIENT_MESSAGE = {
   SessionHello: 'session.hello',
@@ -21,15 +26,36 @@ export const CLIENT_MESSAGE = {
 
 export const SERVER_MESSAGE = {
   SessionReady: 'session.ready',
+  ChatMode: 'chat.mode',
   ChatText: 'chat.text',
   AgentStep: 'agent.step',
   ToolCall: 'tool.call',
+  ChatPlan: 'chat.plan',
+  ChatAsk: 'chat.ask',
   ChatDone: 'chat.done',
   ChatError: 'chat.error',
   Pong: 'pong',
 } as const
 
-export type ToolName = 'render' | 'wait_for_observation' | 'call_page_method'
+/**
+ * 工具名。
+ *
+ * 前三个走 `tool.call` RPC（浏览器执行）；后四个是**服务端收尾工具**
+ * （`lifecycle.completesRun`，只更新 session 并产出 `chat.plan` / `chat.ask` / 进度文本，
+ * **不会**出现在 `tool.call` 里）—— 它们出现在 `ToolName` 里是为了让过程区
+ * （`agent.step.tool`）能给出准确文案。
+ */
+export type ToolName =
+  | 'render'
+  | 'wait_for_observation'
+  | 'call_page_method'
+  | 'propose_plan'
+  | 'revise_plan'
+  | 'ask_user'
+  | 'finish_turn'
+
+/** 服务端收尾工具（completesRun）的子集 —— 判断"本轮是怎么结束的"时用它 */
+export type TurnEndToolName = 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'
 
 /**
  * 握手消息。**不带会话标识**：会话是连接作用域的（一个会话 = 一条连接），
@@ -45,6 +71,24 @@ export interface SessionHelloMessage {
 export interface ChatSendMessage {
   t: 'chat.send'
   text: string
+  /**
+   * 本轮的模式请求值（`auto` / `act` / `plan`）。
+   * 缺省 = 沿用会话当前模式（初始为服务端 `MODE_DEFAULT`）。给了就更新会话模式。
+   */
+  mode?: AgentMode
+  /** 确认某个计划（计划卡上的「开始执行」）：值为 `chat.plan` 下发的 planId */
+  planId?: string
+  /**
+   * 本轮是"对某个计划的修改意见"（计划卡上的「修改计划」）：值为当前 `chat.plan` 的 planId，
+   * `text` 即用户的修改意见。
+   *
+   * 与 `planId`（确认）/ `questionId`（回答）同属"回合边界的用户回应"，但语义不同：
+   * 确认 = 照这份计划执行；修改 = **在这份计划上改**（服务端据此标记本轮为修订轮，
+   * 模型必须调用 `revise_plan` 并回填完整步骤，未改动的步骤保留原 step id，进度因此不丢）。
+   */
+  revisePlanId?: string
+  /** 回答某个提问（问题卡上的选项 / 直接打字）：值为 `chat.ask` 下发的 questionId */
+  questionId?: string
 }
 
 export interface ChatCancelMessage {
@@ -152,6 +196,24 @@ export interface SessionReadyMessage {
 }
 
 /**
+ * 本轮的**模式判定结果**（每轮开始时先于任何 `chat.text` / `agent.step` 下发）。
+ *
+ * 客户端据此显示「当前模式」与它是怎么被决定的；`effective === 'plan'` 且计划未确认时，
+ * 服务端会硬拦 `render` / `call_page_method`（见 `PLAN_GATE`）。
+ */
+export interface ChatModeMessage {
+  t: 'chat.mode'
+  /** 本轮请求的模式（客户端给的，或会话当前的） */
+  requested: AgentMode
+  /** 实际生效的模式（`auto` 判定后的落点） */
+  effective: ModeDecision['effective']
+  /** 判定来源：用户显式 / 启发式 / 交给模型自判 */
+  decidedBy: ModeDecision['decidedBy']
+  /** 面向用户的判定理由（可缺省） */
+  reason?: string
+}
+
+/**
  * 能力项：agent 能打开的页面（由 agent-server 从 manifest 派生，零 LLM 成本）。
  * 客户端「欢迎页」渲染成卡片；`tag` 为将来「点击直达」预留。
  */
@@ -252,7 +314,80 @@ export interface CallPageMethodToolArgs {
   timeoutMs?: number
 }
 
-export type ToolArgs = RenderToolArgs | WaitForObservationToolArgs | CallPageMethodToolArgs
+/**
+ * `propose_plan` 入参：把复杂任务拆成可逐轮推进的步骤。
+ * 调用后本轮 run 以 `completed` 收尾（`chat.plan` 下发计划卡），用户确认前不得操作页面。
+ */
+export interface ProposePlanToolArgs {
+  /** 一句话说明这个计划要达成什么 */
+  summary: string
+  /** 有序步骤（1~8 条）；每步一句话即可，不要写实现细节 */
+  steps: Array<{
+    title: string
+    detail?: string
+  }>
+}
+
+/**
+ * `revise_plan` 入参：在当前计划上做**增量修订**（而不是换一份新计划）。
+ *
+ * 语义（服务端按 `step.id` 合并，规则见 `add-interactive-plan-revision`）：
+ * - 带 `id` 且命中当前计划的步骤 = **原地修改**（默认保留该步骤状态，`done` 仍是 `done`）；
+ * - 不带 `id` 的步骤 = **新增**（服务端分配新的稳定标识，状态 `pending`）；
+ * - 当前计划里未出现在 `steps` 中的步骤 = **删除**；
+ * - 顺序以 `steps` 为准（天然支持调整顺序）。
+ *
+ * 因此 `steps` 必须是**修订后的完整步骤序列** —— 未改动的步骤也要原样带回它的 `id` 与标题，
+ * 否则会被当成"删掉旧的 + 加一个新的"，进度就丢了。
+ */
+export interface RevisePlanToolArgs {
+  /** 一句话说明这次改了什么（给用户看的变更摘要；可省略） */
+  note?: string
+  /** 修订后的目标；省略 = 沿用当前计划的 summary */
+  summary?: string
+  steps: Array<{
+    /** 要原地修改的既有步骤 id（`step-N`）；新增步骤不要带 */
+    id?: string
+    title: string
+    detail?: string
+    /** 该步骤原本已完成（`done`），但这次改动需要重做 → 置回 `pending` */
+    reopen?: boolean
+  }>
+}
+
+/**
+ * `ask_user` 入参：信息不足时向用户提问（一次只问一个问题）。
+ * 调用后本轮 run 以 `completed` 收尾（`chat.ask` 下发问题卡），用户回答后起下一轮。
+ */
+export interface AskUserToolArgs {
+  question: string
+  /** 2~5 个可选项（用户也可以自由输入） */
+  options: string[]
+}
+
+/**
+ * `finish_turn` 入参：本轮进度交接。
+ * 任何一轮都可以用它优雅收尾；`doneAll: true` 表示整个任务完成。
+ */
+export interface FinishTurnToolArgs {
+  /** 本轮做了什么 / 现在的状态（给用户看的一句话） */
+  summary: string
+  /** 已完成的计划步骤 id 列表（可选） */
+  done?: string[]
+  /** 剩余的计划步骤 id 列表（可选） */
+  remaining?: string[]
+  /** 整个任务是否已完成 */
+  doneAll?: boolean
+}
+
+export type ToolArgs =
+  | RenderToolArgs
+  | WaitForObservationToolArgs
+  | CallPageMethodToolArgs
+  | ProposePlanToolArgs
+  | RevisePlanToolArgs
+  | AskUserToolArgs
+  | FinishTurnToolArgs
 
 export interface ToolCallMessage {
   t: 'tool.call'
@@ -269,6 +404,56 @@ export interface ChatDoneMessage {
   startedAt?: number
   /** 本轮 run 总耗时 ms —— 过程区折叠标题的「共 N 步 · X.Xs」用它 */
   durationMs?: number
+  /**
+   * 本轮的结束方式（收尾工具名）：
+   * - `propose_plan`：已给出计划，等用户确认
+   * - `ask_user`：已给出问题，等用户回答
+   * - `finish_turn`：进度已交接（可能还有剩余步骤）
+   * - 缺省：模型自然结束（或步数用尽被降级为暂停）
+   */
+  endedBy?: TurnEndToolName
+}
+
+/**
+ * 计划卡片载荷（`propose_plan` / `revise_plan` 收尾时下发）。
+ * 用户点「开始执行」→ `chat.send({ text, planId })`；点「修改计划」→
+ * `chat.send({ text: '<修改意见>', revisePlanId: planId })`；点「重新生成计划」→ 直接发新的任务描述。
+ *
+ * 修订（`revise_plan`）**不改 planId**：卡片在原位更新，`revision` 递增、`revisedAt` / `note` 说明改动，
+ * 用户看到的是"这份计划被改了"而不是"旧卡作废 + 冒出一张新卡"。
+ */
+export interface ChatPlanMessage {
+  t: 'chat.plan'
+  planId: string
+  summary: string
+  steps: PlanStep[]
+  /** 本卡片产生时的模式（UI 可据此显示"计划模式"） */
+  createdAt: number
+  /**
+   * 服务端权威的计划状态。
+   * 客户端**只跟随**它（不自行推断）：修订会让已批准的计划回到 `proposed`（需重新确认），
+   * 本地若按"同 planId 就是同一份"处理就会漂移。
+   */
+  status: 'proposed' | 'approved'
+  /** 第几版（首版 1；每次修订 +1） */
+  revision?: number
+  /** 最近一次修订时间 */
+  revisedAt?: number
+  /** 最近一次修订的变更摘要（如「修改 1 步（第 3 步：导出 CSV）；新增 1 步」） */
+  note?: string
+}
+
+/**
+ * 提问卡片载荷（`ask_user` 收尾时下发）。
+ * 用户点选项 / 直接打字 → `chat.send({ text, questionId })`。
+ */
+export interface ChatAskMessage {
+  t: 'chat.ask'
+  questionId: string
+  question: string
+  /** 2~5 个可选项（点选即作为回答发送） */
+  options: string[]
+  askedAt: number
 }
 
 export interface ChatErrorMessage {
@@ -282,9 +467,12 @@ export interface PongMessage {
 
 export type ServerMessage =
   | SessionReadyMessage
+  | ChatModeMessage
   | ChatTextMessage
   | AgentStepMessage
   | ToolCallMessage
+  | ChatPlanMessage
+  | ChatAskMessage
   | ChatDoneMessage
   | ChatErrorMessage
   | PongMessage

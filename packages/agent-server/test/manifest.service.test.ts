@@ -179,3 +179,43 @@ test('buildWelcome：WELCOME_MESSAGE 覆盖 text（能力清单不变）/ WELCOM
     delete process.env.WELCOME_ENABLED
   }
 })
+
+test('buildAgentContext：修订轮注入「本轮是计划修改」+ 用户的修改意见（并给出步骤 id 供回填）', async () => {
+  const svc = await makeService()
+  const plan = {
+    id: 'plan-1',
+    summary: '对比三张数据源',
+    steps: [
+      { id: 'step-1', title: '打开数据源页', status: 'done' as const },
+      { id: 'step-2', title: '逐个查看配置', status: 'pending' as const },
+    ],
+    status: 'proposed' as const,
+    createdAt: 1,
+    revision: 1,
+  }
+
+  // 非修订轮：不该出现这一段（规则 15 里会提到"见「本轮是计划修改」段"，所以按段落标题断言）
+  const plain = svc.buildAgentContext({ plan })
+  assert.doesNotMatch(plain, /\[本轮是计划修改\]/)
+  assert.match(plain, /\[当前计划 plan-1\]/) // 但计划本身照旧注入（模型据此知道做到哪了）
+
+  const revising = svc.buildAgentContext({
+    plan,
+    planTurn: { kind: 'revise', planId: 'plan-1', text: '第 2 步改成导出 CSV', at: 2 },
+  })
+  assert.match(revising, /\[本轮是计划修改\]/)
+  assert.match(revising, /第 2 步改成导出 CSV/)
+  assert.match(revising, /必须调用 revise_plan/)
+  assert.match(revising, /未改动的步骤原样带回它的 id/)
+  // 步骤 id 必须在同一份 prompt 里可见（模型要原样回填它们）
+  assert.match(revising, /step-1 打开数据源页/)
+  assert.match(revising, /step-2 逐个查看配置/)
+})
+
+test('buildAgentContext：规则 15 常驻（"改计划必须用 revise_plan，不要换新计划"）', async () => {
+  const svc = await makeService()
+  const prompt = svc.buildAgentContext()
+  assert.match(prompt, /15\. 用户对\*\*当前计划\*\*提修改意见时/)
+  assert.match(prompt, /必须调用 revise_plan/)
+  assert.match(prompt, /不要\*\*因为一句修改意见就换一份新计划/)
+})

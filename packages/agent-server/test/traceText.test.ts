@@ -36,6 +36,27 @@ test('describeToolStep：缺目标时退回通用文案（不出现 undefined）
   assert.deepEqual(describeToolStep('call_page_method', {}), { text: '正在调用 当前页的方法' })
 })
 
+test('describeToolStep：收尾工具也要有一行（否则用户只看到"对话突然结束 + 一张卡片"）', () => {
+  assert.deepEqual(describeToolStep('propose_plan', { summary: 'S', steps: [{ title: 'A' }, { title: 'B' }] }), {
+    text: '正在整理执行计划（2 步）',
+    target: 'plan',
+  })
+  assert.deepEqual(describeToolStep('propose_plan', {}), { text: '正在整理执行计划', target: 'plan' })
+  assert.deepEqual(describeToolStep('ask_user', { question: '看哪个？' }), {
+    text: '正在向你提问',
+    target: 'ask',
+  })
+  assert.deepEqual(describeToolStep('finish_turn', { summary: '已打开列表' }), {
+    text: '正在交接本轮进度',
+    target: 'turn',
+  })
+  // 修订也是"结束本轮"的动作：卡片内容会原地变，过程区必须给出这一行
+  assert.deepEqual(describeToolStep('revise_plan', { steps: [{ id: 'step-1', title: 'A' }] }), {
+    text: '正在按你的意见更新计划',
+    target: 'plan',
+  })
+})
+
 test('describeToolStep：未知工具 / 脏实参都不抛（观测路径不能影响主流程）', () => {
   assert.deepEqual(describeToolStep('some_new_tool', { anything: 1 }), { text: '正在执行 some_new_tool' })
   assert.deepEqual(describeToolStep('render', null), { text: '正在打开页面' })

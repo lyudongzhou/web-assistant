@@ -1,0 +1,61 @@
+{
+  "changeId": "add-interactive-plan-revision",
+  "revisions": [
+    {
+      "id": "rev-70cf990e",
+      "description": "修订草稿不再跨结果延续：`submitPlanRevision` 提交即收起输入框（清 `draft`），`applyPlan` 收到（同 planId 的）新卡片也一律清 `draft`。原实现让草稿在\"同计划\"上延续，而卡片\"是否显示输入框\"只由 `draft` 是否存在决定，导致修订结果回来后卡片停在「提交修改」输入视图、看不到「开始执行」。",
+      "reason": "验收发现：提交修改意见并收到修订结果后，界面仍停留在\"提交修改\"视图（用户原话：\"直接跳到开始执行界面\"才是期望）。根因是草稿被当成跨结果延续的状态；改为\"草稿只在正在编辑时存在\"，提交与收到新卡片两条路径都收起输入框 —— 同时让 `PlanCard` 里 `revising`（\"正在按你的意见更新计划…\"）的文案从死分支变为可见。",
+      "author": "AI",
+      "createdAt": "2026-09-21T14:16:05.657Z",
+      "metadata": {
+        "type": "behavior",
+        "affectedField": "PlanCard.draft（turnState 的修订草稿态）",
+        "updateTarget": [
+          "design",
+          "delta-specs"
+        ],
+        "source": {
+          "file": "packages/chat-client/src/lib/turnState.ts",
+          "function": "submitPlanRevision / applyPlan"
+        }
+      }
+    },
+    {
+      "id": "rev-c2a1594c",
+      "description": "面板折叠语义改为：**收起 = 只剩折叠头一行** —— `PanelSection` 的 `#footer`（动作条）从\"常驻\"改为随详情一起收起（放在 `v-if=\"open\"` 分组内，且位于详情之外，主操作不会被详情滚走）。计划面板的默认折叠值改为**跟随服务端 `status`**：`proposed` 默认展开、`approved` 默认收起（点「开始执行」后自动收成一行，修订回到 `proposed` 又自动展开），由 `usePanelOpen` 新增的 getter 形式默认值实现（值变则跟随、值没变不弹回用户的手动折叠）。折叠头里的徽标 / 第 N 版 / 目标摘要 / 步骤计数仍常驻；状态行（修订中提示 / 过程区「思考中…」）保持常驻。",
+      "reason": "验收反馈（用户原话）：「计划执行中面板与过程面板是同级的，现在样式不太一样，而且修改计划按钮没收起。」headless Chrome 实测确认三件事：① 过程区折起来 31px 一行，计划卡折起来 74px = 折叠头 32.7 + **按钮行 40.4（占折叠后高度 55%）** —— 两个\"同构\"面板折起来不是同一个东西；② 两个折叠头不等高（计划 32.7 vs 过程 28.5）；③ 计划卡根上的 `line-height: 1.7` 漏进头行。原设计为了\"主操作不能被折叠藏起来\"把按钮做成常驻 footer，代价是视觉/行为一致性的丢失；而\"执行中\"的计划本就不再需要用户立刻做决定（要改就点开），把按钮收进详情没丢功能。用户在两套方案里选择了\"方案 1：按钮随详情收起 + 待确认展开/执行中收起\"。",
+      "author": "AI",
+      "createdAt": "2026-09-21T15:00:40.604Z",
+      "metadata": {
+        "type": "behavior",
+        "affectedField": "PlanCard 折叠（收起粒度 + 默认折叠值）",
+        "updateTarget": [
+          "design",
+          "delta-specs"
+        ],
+        "source": {
+          "file": "packages/chat-client/src/components/PanelSection.vue",
+          "function": "PanelSection（#footer 随 open 收起）+ usePanelOpen（getter 默认值）"
+        }
+      }
+    },
+    {
+      "id": "rev-d8e4816b",
+      "description": "\"同构的那几行\"全部收进壳（`PanelSection`）：`.panel { flex: 0 0 auto; font-size: 12px }`（面板不再被长内容压扁；字号不再\"一个靠宿主继承、一个自己设\"）、`.panel-head { line-height: 1.5 }`（折叠头高度不再被调用方的 `line-height` 影响）、`.panel-body { max-height: var(--wa-panel-body-max, 200px); overflow-y: auto }`（详情限高 + 内部滚动，代价由壳统一兜住）、`.panel-toggle:hover :slotted(.title)`（修悬停高亮对 slot 内容无效）。同时删掉三处重复/漂移：`.plan-card.approved { opacity: .92 }`、`TraceTimeline` 的 `.list { max-height: 200px }`、`ChatPanel` / `HostAssistantChat` 各一份的 `.trace-panel { flex: 0 0 auto }`；`PlanCard` 的徽标药丸定 `line-height: 1.4`（不撑高折叠头）。实测收口：两处折叠头都精确 30px（面板都 31px）、`flex-shrink: 0`、`opacity: 1`；8 步计划在 480px 高 dock 里详情内部滚动、输入栏仍在视野内、无溢出。",
+      "reason": "承接上一条：折叠粒度统一后，\"同构\"必须由壳保证而不是靠约定 —— 否则又会出现\"名义同构、实际各自漂移\"（这次实测到的折叠头 4px 高差、opacity 观感差、flex 行为差都是这么来的）。详情限高滚动是\"面板不被压扁\"的代价项，必须和新折叠语义一起落地（否则长计划把输入栏顶出视野）。",
+      "author": "AI",
+      "createdAt": "2026-09-21T15:00:45.056Z",
+      "metadata": {
+        "type": "internal",
+        "affectedField": "PanelSection 壳样式（.panel / .panel-head / .panel-body / :slotted hover）",
+        "updateTarget": [
+          "design"
+        ],
+        "source": {
+          "file": "packages/chat-client/src/components/PanelSection.vue",
+          "function": ".panel / .panel-head / .panel-body"
+        }
+      }
+    }
+  ]
+}

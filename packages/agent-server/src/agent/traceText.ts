@@ -44,6 +44,26 @@ export function describeToolStep(tool: string, args?: unknown): ToolStepDescript
     const page = str((args as WaitForObservationToolArgs | undefined)?.page)
     return page ? { text: `正在等待页面数据 <${page}>`, target: page } : { text: '正在等待页面数据' }
   }
+  // 收尾工具（`lifecycle.completesRun`）：它们不改页面，但会结束本轮 —— 过程区仍要有一行，
+  // 否则用户只看到「对话突然结束，多了一张卡片」，无从知道 agent 做了什么。
+  if (tool === 'propose_plan') {
+    const stepCount = Array.isArray((args as { steps?: unknown[] } | undefined)?.steps)
+      ? ((args as { steps: unknown[] }).steps.length)
+      : 0
+    return stepCount > 0
+      ? { text: `正在整理执行计划（${stepCount} 步）`, target: 'plan' }
+      : { text: '正在整理执行计划', target: 'plan' }
+  }
+  if (tool === 'revise_plan') {
+    // 修订也是"结束本轮"的动作：过程区要有一行，否则用户只看到卡片内容变了、不知道谁改的
+    return { text: '正在按你的意见更新计划', target: 'plan' }
+  }
+  if (tool === 'ask_user') {
+    return { text: '正在向你提问', target: 'ask' }
+  }
+  if (tool === 'finish_turn') {
+    return { text: '正在交接本轮进度', target: 'turn' }
+  }
   return { text: `正在执行 ${tool}` }
 }
 

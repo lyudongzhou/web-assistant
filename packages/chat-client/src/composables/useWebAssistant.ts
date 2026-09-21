@@ -8,11 +8,13 @@
 //   - useAgentChat    → 对话状态机（消息 / loading / 流式拼接 / tool.call 分发）
 //   - 本文件          → 把三者接起来，并负责「运行时事件 → socket 转发」的映射
 import { onMounted, onUnmounted, ref, watch, type ComputedRef, type Ref, type ShallowRef } from 'vue'
-import { createAgentSocket, type AgentSocket, type AgentSocketState } from '../lib/agentSocket.js'
+import { createAgentSocket, type AgentSocket, type AgentSocketState, type ChatSendOptions } from '../lib/agentSocket.js'
 import { useRuntimeHost } from './useRuntimeHost.js'
 import { useAgentChat } from './useAgentChat.js'
 import { useWelcomePage } from './useWelcomePage.js'
-import type { ServerMessage, WelcomePayload } from '@webassistant/protocol/websocket'
+import type { ServerMessage, WelcomePayload, ChatModeMessage } from '@webassistant/protocol/websocket'
+import type { AgentMode } from '@webassistant/protocol'
+import type { AskCard, PlanCard } from '../lib/turnState.js'
 import { withActivityOrigin, type WcActivity } from '@webassistant/wc-runtime-vue/host'
 import type {
   NavigationResult,
@@ -99,7 +101,32 @@ export interface UseWebAssistantReturn {
    * 配导出的 `WelcomePage`（或自己的组件）渲染，不必自己判空与合并兜底。
    */
   welcomePage: UseWelcomePageReturn
+  /**
+   * 本轮模式判定（`chat.mode`）：`{ requested, effective, decidedBy, reason }`。
+   * 宿主/内置 UI 用它显示「当前模式 · 判定来源」。
+   */
+  mode: ComputedRef<ChatModeMessage | null>
+  /** 当前计划卡（`chat.plan`）：proposed = 等确认，approved = 执行中 */
+  plan: ComputedRef<PlanCard | null>
+  /** 当前问题卡（`chat.ask`）：`answer` 非空表示已回答 */
+  ask: ComputedRef<AskCard | null>
   send: (input: string) => void
+  /** 带附加指令发送（模式 / 确认计划 / 回答提问） */
+  sendWith: (input: string, options?: ChatSendOptions) => void
+  /** 确认计划（计划卡「开始执行」） */
+  confirmPlan: (plan?: PlanCard) => void
+  /** 展开「修改计划」输入框 */
+  beginPlanRevision: (planId: string) => void
+  /** 修改意见输入变化 */
+  updatePlanDraft: (draft: string) => void
+  /** 取消修改 */
+  cancelPlanRevision: () => void
+  /** 提交修改意见（计划卡「提交修改」，chat.send 带 revisePlanId） */
+  revisePlan: (input: string, plan?: PlanCard) => void
+  /** 重新生成计划（推倒重来） */
+  replan: () => void
+  /** 以指定模式发一轮（ModeSwitch 用） */
+  sendWithMode: (mode: AgentMode, input: string) => void
   cancel: () => void
   reset: () => void
   /** 开始新会话（会话 = 连接）：清空消息 + 重连（服务端新建会话）。UI 的「新会话」入口用它。 */
@@ -271,7 +298,18 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     loading,
     welcome,
     sessionReady,
+    mode,
+    plan,
+    ask,
     send,
+    sendWith,
+    confirmPlan,
+    beginPlanRevision,
+    updatePlanDraft,
+    cancelPlanRevision,
+    revisePlan,
+    replan,
+    sendWithMode,
     cancel,
     reset,
     startNewSession,
@@ -336,6 +374,17 @@ export function useWebAssistant(options: UseWebAssistantOptions = {}): UseWebAss
     sessionReady,
     welcomePage,
     send,
+    sendWith,
+    confirmPlan,
+    beginPlanRevision,
+    updatePlanDraft,
+    cancelPlanRevision,
+    revisePlan,
+    replan,
+    sendWithMode,
+    mode,
+    plan,
+    ask,
     cancel,
     reset,
     startNewSession,

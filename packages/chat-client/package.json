@@ -23,6 +23,7 @@
     "typecheck": "vue-tsc -p tsconfig.json --noEmit",
     "test": "node --import tsx --test test/*.test.mjs",
     "test:render": "node test/render-split.mjs",
+    "test:render:panel": "node test/render-panel.mjs",
     "prepublishOnly": "pnpm build:lib"
   },
   "dependencies": {

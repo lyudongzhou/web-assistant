@@ -11,9 +11,25 @@ import type {
   ToolResultMessage,
 } from '@webassistant/protocol/websocket'
 import type { NavigationSource } from '@webassistant/protocol/session'
+import type { AgentMode } from '@webassistant/protocol'
 
 export const DEFAULT_WS_BASE = '/ws'
 export const DEFAULT_WC_BASE = '/wc'
+
+/**
+ * 本轮的附加指令（对应 `chat.send` 的可选字段）：
+ * - `mode`：模式请求值（`auto` / `act` / `plan`）—— 用户在 ModeSwitch 上的选择
+ * - `planId`：确认某个计划（计划卡「开始执行」）
+ * - `questionId`：回答某个提问（问题卡选项 / 直接打字）
+ */
+export interface ChatSendOptions {
+  mode?: AgentMode
+  /** 确认某个计划（计划卡「开始执行」） */
+  planId?: string
+  /** 对本轮的"修改计划"意见（计划卡「修改计划」）：值为当前计划的 planId，`text` 即意见 */
+  revisePlanId?: string
+  questionId?: string
+}
 
 export type AgentSocketState = 'connecting' | 'connected' | 'disconnected'
 export type AgentSocketEventHandler = (message: ServerMessage) => void
@@ -59,8 +75,8 @@ export interface AgentSocket {
   sendPageEmit(payload: { tag: string; event: string; payload?: unknown; at?: number }): void
   /** 转发当前页 `defineExpose` 能力清单（agent call_page_method 的依据） */
   sendPageExposed(payload: { tag: string; keys: string[] }): void
-  /** 发送 chat（用户消息） */
-  sendChat(text: string): void
+  /** 发送 chat（用户消息）；`options` 用于本轮的附加指令（模式 / 确认计划 / 回答提问） */
+  sendChat(text: string, options?: ChatSendOptions): void
   /** 取消当前 agent run */
   sendCancel(): void
   /** 心跳 ping（通常由内部定时器自动发送） */
@@ -266,7 +282,18 @@ export function createAgentSocket(options: AgentSocketOptions): AgentSocket {
     sendPageExposed(payload) {
       sendRaw({ t: 'page.exposed', ...payload } as ClientMessage)
     },
-    sendChat(text) { sendRaw({ t: 'chat.send', text }) },
+    sendChat(text, options) {
+      // 只带非空字段：空串/undefined 会让服务端以为"显式指定了空模式"（模式解析会回落，
+      // 但 planId/questionId/revisePlanId 的配对语义会变得含糊）
+      sendRaw({
+        t: 'chat.send',
+        text,
+        ...(options?.mode ? { mode: options.mode } : {}),
+        ...(options?.planId ? { planId: options.planId } : {}),
+        ...(options?.revisePlanId ? { revisePlanId: options.revisePlanId } : {}),
+        ...(options?.questionId ? { questionId: options.questionId } : {}),
+      })
+    },
     sendCancel() { sendRaw({ t: 'chat.cancel' }) },
     sendPing() { sendRaw({ t: 'ping' }) },
     disconnect() { doDisconnect() },

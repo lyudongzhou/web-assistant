@@ -38,8 +38,19 @@
         :placeholder="placeholder"
         :activities="activities"
         :trace-duration-ms="traceSummary.durationMs"
-        @send="send"
+        :plan="plan"
+        :ask="ask"
+        :mode="mode"
+        @send="onSend"
         @new-session="startNewSession"
+        @approve-plan="confirmPlan"
+        @revision-open="onRevisionOpen"
+        @revision-input="updatePlanDraft"
+        @revision-cancel="cancelPlanRevision"
+        @revise="onRevise"
+        @replan="onReplan"
+        @answer="onAnswer"
+        @change-mode="onModeChange"
       />
 
       <div v-if="renderArea" class="render-area panel">
@@ -91,7 +102,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
+import type { AgentMode } from '@webassistant/protocol'
 import ChatPanel from './components/ChatPanel.vue'
 import ActivityLog from './components/ActivityLog.vue'
 import WelcomePage from './components/WelcomePage.vue'
@@ -135,6 +147,16 @@ const {
   welcome: welcomeData,
   welcomePage,
   send,
+  sendWith,
+  confirmPlan,
+  beginPlanRevision,
+  updatePlanDraft,
+  cancelPlanRevision,
+  revisePlan,
+  replan,
+  mode,
+  plan,
+  ask,
   cancel,
   startNewSession,
   mountEl,
@@ -168,6 +190,56 @@ const {
 
 /** 是否渲染面板内的「渲染区域」：宿主直连（host）没有它 —— 页面在宿主自己的位置渲染 */
 const renderArea = computed(() => effectiveSurface !== 'host')
+
+// ── 回合边界（模式 / 计划 / 提问）的接线 ───────────────────────────────────
+// 与 <HostAssistantDock> 同一套语义（卡片 UI 状态在 useAgentChat / lib/turnState.ts，这里只做转译）。
+
+/** 用户选的模式 —— 只在下一轮随 chat.send 下发 */
+const selectedMode = ref<AgentMode>('auto')
+
+// 服务端回传的 requested 是权威值（可能被 MODE_DEFAULT 回落）：跟上它，避免"以为已经同步"而不带 mode
+watch(
+  () => mode.value?.requested,
+  (requested) => {
+    if (requested) selectedMode.value = requested
+  },
+)
+
+function onSend(text: string): void {
+  const current = mode.value?.requested ?? 'auto'
+  if (selectedMode.value !== current) sendWith(text, { mode: selectedMode.value })
+  else send(text)
+}
+
+function onModeChange(next: AgentMode): void {
+  selectedMode.value = next
+}
+
+/** 计划卡「修改计划」：展开卡内输入框（草稿态在 `lib/turnState.ts`） */
+function onRevisionOpen(): void {
+  const card = plan.value
+  if (card) beginPlanRevision(card.message.planId)
+}
+
+/**
+ * 计划卡「提交修改」：带 `revisePlanId` 发出用户的修改意见 —— 服务端把本轮标成修订轮，
+ * 模型用 `revise_plan` 在**当前计划**上增量合并（未改动的步骤保 id、保完成状态，planId 不变）。
+ * 这与旧的「重新规划」（发一句固定文案、由模型全量重出）是两条不同的路径。
+ */
+function onRevise(): void {
+  const card = plan.value
+  if (!card) return
+  revisePlan(card.draft ?? '', card)
+}
+
+/** 计划卡「重新生成计划」：推倒重来（保留这条路径，用于"换一套方案"） */
+function onReplan(): void {
+  replan()
+}
+
+function onAnswer(text: string, questionId: string): void {
+  sendWith(text, { questionId })
+}
 
 // 欢迎页 = 渲染区空态（runtime 没有渲染子 WC）。状态机在 useWebAssistant 里算好（纯逻辑见 lib/welcome.ts），
 // 因此「内置默认」与「宿主自定义」用的是同一份判断/合并。

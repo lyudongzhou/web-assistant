@@ -42,8 +42,19 @@
         :show-trace="showActivities"
         :trace-default-open="activitiesDefaultOpen"
         :trace-duration-ms="traceSummary.durationMs"
-        @send="send"
+        :plan="plan"
+        :ask="ask"
+        :mode="mode"
+        @send="onSend"
         @cancel="cancel"
+        @approve-plan="onApprovePlan"
+        @revision-open="onRevisionOpen"
+        @revision-input="updatePlanDraft"
+        @revision-cancel="cancelPlanRevision"
+        @revise="onRevise"
+        @replan="onReplan"
+        @answer="onAnswer"
+        @change-mode="onModeChange"
       />
     </section>
 
@@ -60,7 +71,8 @@
 //   TraceTimeline           过程区（步骤 / 思考 / 错误 + runtime 活动合并去重，可单独复用）
 //   HostAssistantActivities 纯 runtime 活动折叠条（带「清空」，可单独复用）
 // 宿主想更自由：用 `useWebAssistant()`（headless）或这些子组件自己拼。
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import type { AgentMode } from '@webassistant/protocol'
 import HostAssistantChat from './HostAssistantChat.vue'
 import { useWebAssistant } from '../composables/useWebAssistant.js'
 import type { AgentSocketState } from '../lib/agentSocket.js'
@@ -116,6 +128,13 @@ const {
   messages,
   loading,
   send,
+  sendWith,
+  confirmPlan,
+  beginPlanRevision,
+  updatePlanDraft,
+  cancelPlanRevision,
+  revisePlan,
+  replan,
   cancel,
   startNewSession,
   wsStatus,
@@ -130,6 +149,9 @@ const {
   navigationSource,
   routes,
   traceSummary,
+  mode,
+  plan,
+  ask,
 } = useWebAssistant({
   wsBase: props.wsBase,
   // `createRuntime` 一旦提供，渲染面缺省即推导为 'host'（见 lib/surface.ts）——
@@ -153,6 +175,73 @@ const suggestList = computed<string[]>(() => {
   if (props.suggestions) return props.suggestions
   return routes.value.slice(0, 3).map((route) => `打开「${route.title ?? route.tag}」`)
 })
+
+// ── 回合边界（模式 / 计划 / 提问）的接线 ───────────────────────────────────
+//
+// dock 只做"数据进、事件出"的转译：卡片与模式切换的 UI 状态都在 useAgentChat（lib/turnState.ts）里，
+// 这里只把子组件的事件翻成对 socket 的调用。
+
+/** 用户选的模式 —— 只在**下一轮**随 chat.send 下发（不打断正在跑的一轮） */
+const selectedMode = ref<AgentMode>('auto')
+
+// 服务端回传的 requested 是权威值（可能是 MODE_DEFAULT 回落的结果）：跟上它，
+// 否则用户点了「直接执行」之后、服务端其实还在 auto 时，dock 会以为"已经同步了"而不带 mode。
+watch(
+  () => mode.value?.requested,
+  (requested) => {
+    if (requested) selectedMode.value = requested
+  },
+)
+
+/** 发送时带上模式选择（与服务端当前值不同才带，避免每轮都塞一遍） */
+function onSend(text: string): void {
+  const current = mode.value?.requested ?? 'auto'
+  if (selectedMode.value !== current) sendWith(text, { mode: selectedMode.value })
+  else send(text)
+}
+
+/** 模式切换：只记下来，不立刻发请求（用户往往接着就要说做什么） */
+function onModeChange(next: AgentMode): void {
+  selectedMode.value = next
+}
+
+/** 计划卡「开始执行」：带 planId 的一轮（服务端据此批准计划并放开页面操作门禁） */
+function onApprovePlan(card: Parameters<typeof confirmPlan>[0]): void {
+  confirmPlan(card)
+}
+
+/** 计划卡「修改计划」：展开卡内输入框（草稿态在 `lib/turnState.ts`，这里只转发） */
+function onRevisionOpen(): void {
+  const card = plan.value
+  if (card) beginPlanRevision(card.message.planId)
+}
+
+/**
+ * 计划卡「提交修改」：把用户写下的修改意见作为**对当前计划的修订**发出。
+ *
+ * 与「重新生成计划」的区别就在这里：这条消息带 `revisePlanId`，服务端据此把本轮标成修订轮，
+ * 模型用 `revise_plan` 在本计划上增量合并 —— 未改动的步骤保留原 step id 与完成状态，
+ * planId 不变、进度不丢。以前只有一个「重新规划」按钮、发的是固定文案，
+ * 结果必然是"推倒重来 + 进度清零"。
+ */
+function onRevise(): void {
+  const card = plan.value
+  if (!card) return
+  revisePlan(card.draft ?? '', card)
+}
+
+/**
+ * 计划卡「重新生成计划」：推倒重来（全量重规划）。
+ * 仍保留这条路径 —— 有时用户就是想要另一套方案，而不是在原方案上改。
+ */
+function onReplan(): void {
+  replan()
+}
+
+/** 问题卡选项被点：带 questionId 发送（服务端把该问题标记为已回答） */
+function onAnswer(text: string, questionId: string): void {
+  sendWith(text, { questionId })
+}
 </script>
 
 

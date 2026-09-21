@@ -98,7 +98,12 @@ interface PendingCall {
 // ───────── 客户端 → 服务端 ─────────
 type ClientMessage =
   | { t: 'session.hello'; wcBase: string; manifestVersion: number }   // 不带 sessionId：会话 = 连接
-  | { t: 'chat.send'; text: string }
+  // 一轮的用户输入（含回合边界的"回应"）：
+  //   mode     本轮模式请求值（auto / act / plan）；缺省沿用会话模式
+  //   planId   确认某个计划（计划卡「开始执行」）
+  //   revisePlanId 对某个计划提修改意见（计划卡「修改计划」+「提交修改」）—— 见 §4.7
+  //   questionId 回答某个提问（问题卡选项）
+  | { t: 'chat.send'; text: string; mode?: AgentMode; planId?: string; revisePlanId?: string; questionId?: string }
   | { t: 'chat.cancel' }                                          // 用户打断 agent
   | { t: 'tool.result'; id: string; ok: true; data: unknown }
   | { t: 'tool.result'; id: string; ok: false; error: string; timedOut?: boolean }
@@ -112,6 +117,14 @@ type ClientMessage =
 // ───────── 服务端 → 客户端 ─────────
 type ServerMessage =
   | { t: 'session.ready'; sessionId: string; manifestVersion: number; welcome?: WelcomePayload }
+  // 回合边界（见 §4.5）：本轮模式判定 / 计划卡 / 问题卡
+  | { t: 'chat.mode'; requested: AgentMode; effective: 'act' | 'plan'
+      decidedBy: 'user' | 'heuristic' | 'model'; reason?: string }
+  | { t: 'chat.plan'; planId: string; summary: string; steps: PlanStep[]; createdAt: number
+      // status 是**服务端权威**的卡片状态（修订会让已批准的计划回到 'proposed'）；
+      // revision 首版为 1，每次 revise_plan +1；note 是变更摘要（如「修改 1 步（导出 CSV）」）
+      status: 'proposed' | 'approved'; revision?: number; revisedAt?: number; note?: string }
+  | { t: 'chat.ask'; questionId: string; question: string; options: string[]; askedAt: number }
   // 流式文本：channel 区分「结果正文」与「模型思考」（缺省 'text'）
   | { t: 'chat.text'; delta: string; channel?: 'text' | 'reasoning' }
   // 可见执行的轨迹（过程）：phase start 建行、end 就地结算（成败 + 耗时）
@@ -121,11 +134,15 @@ type ServerMessage =
       ok?: boolean; error?: string; durationMs?: number
     }
   | { t: 'tool.call'; id: string; name: ToolName; args: unknown; timeoutMs: number }
-  | { t: 'chat.done'; steps: number; startedAt?: number; durationMs?: number }
+  // 本轮的结束方式（endedBy 见 §4.5）：缺省 = 模型自然结束（或步数用尽被"暂停"）
+  | { t: 'chat.done'; steps: number; startedAt?: number; durationMs?: number; endedBy?: TurnEndToolName }
   | { t: 'chat.error'; message: string }
   | { t: 'pong' }
 
 type ToolName = 'render' | 'wait_for_observation' | 'call_page_method'
+              | 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'   // 后四个是服务端收尾工具（不走 tool.call）
+type TurnEndToolName = 'propose_plan' | 'revise_plan' | 'ask_user' | 'finish_turn'
+type AgentMode = 'auto' | 'act' | 'plan'
 
 /**
  * call_page_method 的 args（执行面：agent 调页面 `defineExpose` 暴露的方法）。
@@ -180,7 +197,7 @@ core 侧 ────────────┤ 补 page/at + 体积硬上限�
 | `call_page_method` 执行中抛错 / 超时 | 异常 message 原样回 `ok:false`；超时由 server 侧 `TOOL_CALL_TIMEOUT_MS` 兜底，ReAct 不挂死 |
 | 页面尚无 expose（`getPageExposed` 返回 `null`） | prompt 里「当前页可用方法」段缺省，agent 退化为只用 props/dataSources |
 | 未知消息 `t` | 两端均忽略并记日志（协议可演进） |
-| 总步数超限 | 服务端中止并 `chat.error`，已渲染页面不回滚 |
+| 单轮步数用尽 | **不再**回 `chat.error`：降级为「已暂停」（正常 `chat.done` + 一句提示，进度保留，回复"继续"接着做）；模型若收到倒数一步提醒并及时 `finish_turn`，则是一轮正常收尾。详见 §4.6 |
 
 ### 4.4 执行面（`call_page_method`）与通知面（`page.emit`）
 
@@ -252,6 +269,101 @@ tool-result 通道与**那次** tool 调用一一对应，模型无需识别 id�
   `failure` 由 `tool.result.ok = false` 表达（失败分支无 `data`）。
 - **非 Promise 也判成功**：有同步返回值就带在 `value`，无则省略，由 agent 自行判断。
 - wc 页面自己 `emit` 的事件**不做归因**（非 agent 发起，只作为决策辅助）。
+
+### 4.6 回合边界：模式 / 计划 / 提问（`add-agent-modes-and-plan-turns`）
+
+**为什么需要**：单轮 ReAct 有步数上限（`MAX_AGENT_STEPS`）。SDK 在打满上限时**抛错**
+（`Agent runtime exceeded maxIterations`），过去会被 catch 成 `status: 'failed'` → `chat.error` ——
+"查三张数据源并对比"这类任务于是**在第 6 步断在半路**，用户只能自己再打一句"继续"。
+根因不是缺计划，而是**一轮 run 被当成了任务的全部**。
+
+两条修正：
+
+1. **收尾工具**（`lifecycle.completesRun`）：`propose_plan` / `ask_user` / `finish_turn`
+   被调用即让本轮 run 以 `completed` 收尾（不是失败）。再加上 `hooks.beforeModel` 在**倒数一步**
+   注入收尾提醒、以及把 `exceeded maxIterations` 降级成「已暂停」（`chat.done` + 一句提示），
+   用户再也不会看到"步数用尽 = 红色错误"。
+2. **回合边界**：计划确认、澄清提问、进度交接三件事共用一套状态机 ——
+   本轮以收尾工具结束 → 会话记 `plan` / `pendingQuestion` 并把本轮标成 `waiting-plan` / `waiting-user`
+   → 服务端推 `chat.plan` / `chat.ask` → 用户操作经下一次 `chat.send`（带 `planId` / `questionId`）起下一轮。
+
+```
+chat.send(mode) ──┬─ act ──► render/call_page_method ──► finish_turn（步数将尽时提醒收尾）
+                  │
+                  └─ plan ─► propose_plan ──► completed + chat.plan（waiting-plan）
+                                   │  ├─「开始执行」→ chat.send(planId) → 门禁放开 → 分轮推进
+                                   │  └─「修改计划」→ chat.send(revisePlanId, 修改意见)
+                                   │        → revise_plan ──► 同一 planId + revision+1（见 §4.7）
+                                   │
+                        缺信息？ask_user ──► completed + chat.ask（waiting-user）
+                                   │  选项 / 直接打字 → chat.send(questionId) → 下一轮
+```
+
+- **模式**（`AgentMode`）：`act` 直接执行 / `plan` 先出计划 / `auto` 由服务端判定
+  （显式 > 启发式 > 模型自判，见 `agent-server/src/agent/mode.ts`）。
+  判定结果每轮用 `chat.mode` 下发，UI 显示「当前模式 · 判定来源」。
+- **plan 硬门禁**（`PLAN_GATE=hard` 默认）：plan 模式下**未确认计划**时 `render` / `call_page_method`
+  被 `hooks.beforeTool` 拦掉（工具不执行，模型收到 `isError` 的 tool-result 并被告知解锁方式）。
+  拦截发生在同一轮内，不额外消耗模型调用。
+- **状态都在会话上**（connection-scoped）：`session.mode` / `session.plan` / `session.pendingQuestion`，
+  刷新/重连即清零（与「会话 = 连接」一致）。
+- **客户端**：`PlanCard` / `AskCard` / `ModeSwitch` 三个组件 + `lib/turnState.ts`（纯函数状态机，可单测）。
+
+### 4.7 计划的交互式修订（`add-interactive-plan-revision`）
+
+**改的问题**：以前计划卡上只有一个「重新规划」按钮，宿主发的是**一句固定文案**
+（`send('这个计划不太合适，请重新规划')`）。于是 ① 用户没法说"改哪一步"，② 模型只能再 `propose_plan`
+→ 新 `planId`、步骤重新编号、旧计划被标 `superseded` → **已完成步骤的进度全丢**。
+
+**现在**：把"改计划"做成一条带输入、带意图、可增量的路径。
+
+```ts
+// 1) 用户提交修改意见（计划卡的「修改计划」→ 输入 → 「提交修改」）
+{ t: 'chat.send', text: '第 2 步改成导出 CSV，其余不动', revisePlanId: '<当前 planId>' }
+//    → 服务端把它记成 session.planTurn（本轮意图）：prompt 据此注入「本轮是计划修改」+ 修改意见
+//    → hooks.beforeTool 在本轮**拦掉 propose_plan**（reason 指引改用 revise_plan）
+//        —— "不许推倒重来"是服务端保证，不只靠 prompt
+// 2) 模型只能调 revise_plan（收尾工具，completesRun）：
+revise_plan({ note?, summary?, steps: [{ id?, title, detail?, reopen? }] })
+//    steps = **修订后的完整步骤序列**：
+//      带 id 且命中当前计划 → 原地改（**保留状态**，done 仍 done；reopen: true 才置回 pending）
+//      不带 id            → 新增（分配下一个空闲 step-N，状态 pending）
+//      旧计划里没出现      → 删除（移除的已完成步骤会在变更摘要里点名）
+//      顺序以 steps 为准   → 顺带支持调整顺序
+//    引用不存在的 id / 空 steps / 合并后超过 8 步 → 抛错（模型收到 isError 自行修正）
+// 3) 服务端按 id 合并（mergePlanRevision，纯函数）→ **planId 不变**、revision+1、revisedAt
+//    → 推 chat.plan（同 planId，带 status/revision/note）+ 一句变更摘要 chat.text
+//    → 本轮结束状态 waiting-plan（等用户确认）
+```
+
+**两条关键取舍**：
+
+- **修订 ≠ 重新生成**：修订保持 `planId`，卡片在原地更新（`revision` 递增 + `note` 说明改了什么），
+  未改动的步骤保住 `step.id` 与完成状态，所以**进度不丢**。「重新生成计划」（弱化链接）仍保留，
+  走原来的 `propose_plan` 全量重来 —— 两者在 UI 与协议上都能区分。
+- **改完要重新确认**：`session.revisePlan()` 在计划原本已批准时把 `status` 回落成 `proposed` 并
+  **清空 `approvedAt`** —— plan 门禁判的就是 `approvedAt`，不清会出现"计划改了、门禁还开着"。
+  客户端**只跟随** `chat.plan.status`（不自行推断：修订不改 planId，本地推不出来）。
+
+**客户端**：`PlanCard` 卡内展开输入框（`emit('revise')`）；草稿态与"修改中"在 `lib/turnState.ts`
+（`beginPlanRevision` / `updatePlanDraft` / `cancelPlanRevision` / `submitPlanRevision` / `settlePlanRevision`，纯函数可单测）；
+`useAgentChat.revisePlan(text, plan)` → `sendWith(text, { revisePlanId })`。
+**详情可折叠（与过程区同构的 panel）**：过程区与计划卡是**同一层级的两个 panel**（`过程` 在上、`计划` 在下）——
+壳（分隔线 / 底纹 / 折叠头 / 状态行 / 详情 / 动作条）来自共用组件 `PanelSection`，收缩逻辑来自共用的
+`usePanelOpen`（`open` + `toggle` + 可选 `resetKey` + 默认值可传 getter）；两处折叠头结构一致
+（`panel-head > panel-toggle > chev + title + meta`）、chevron 都在最左、整行可点、**等高**、同款字号层级与悬停反馈。
+**折叠粒度也一致：收起 = 只剩折叠头一行** —— 计划 panel 收起时详情（步骤 / 变更摘要 / 说明文案）与动作条
+（「开始执行 / 修改计划」，footer 槽）一起收起，只留折叠头里的徽标 / 第 N 版 / 目标摘要 / 步骤计数
+（"这是什么计划、做到哪了"）。
+**默认折叠值跟随状态**（`usePanelOpen` 的默认值传 getter）：`proposed` 展开（要用户做决定）、
+`approved` 收起 —— 点「开始执行」后自动收成一行（与过程区同高）；`resetKey = planId` ⇒
+同一份计划（修订）保留折叠偏好，换一份计划（重新生成）回到该计划的默认。
+面板详情**限高 + 内部滚动**（壳的 `.panel-body`，`--wa-panel-body-max` 缺省 200px）：计划可以有 8 步，
+面板既不能把消息区挤没，也不能被压扁到内容溢出。
+修订中的「正在按你的意见更新计划…」放在 `#status` 槽，折叠时也可见（与过程区的「思考中…」同位）。
+
+**验收**（真调模型）：`SMOKE_EXPECT=revise SMOKE_MODE=plan node test/smoke-turns.mjs` ——
+要求「同一 `planId` + `revision === 2` + 未改动的步骤 id 保留」，且修订后仍可确认执行。
 
 ## 5. 【待拍板 D1】render 与“等数据”是一个 RPC 还是两个
 

@@ -1,10 +1,15 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common'
 import { randomUUID } from 'node:crypto'
 import type {
+  AgentMode,
+  AgentPlan,
   AgentSession,
   CurrentPage,
+  ModeDecision,
   PageObservation,
   ObservationMatch,
+  PendingQuestion,
+  PlanTurn,
 } from '@webassistant/protocol'
 import { MemorySessionStore, type SessionStore } from './session.store.js'
 
@@ -118,6 +123,118 @@ export class SessionService implements OnModuleDestroy {
 
   find(sessionId: string): AgentSession | undefined {
     return this.store.get(sessionId)
+  }
+
+  // ---- 模式（add-agent-modes-and-plan-turns）----
+  // 三者都是**连接作用域**的：随会话销毁而消失，不落盘、不进 rpc（与 session-per-connection 一致）。
+
+  /** 记录本连接的模式请求值（客户端显式给了就更新；缺省沿用） */
+  setMode(session: AgentSession, mode: AgentMode): void {
+    session.mode = mode
+    this.touch(session)
+  }
+
+  /** 记录本轮模式判定结果（`chat.mode` 的来源） */
+  setModeDecision(session: AgentSession, decision: ModeDecision): void {
+    session.modeDecision = decision
+    this.touch(session)
+  }
+
+  /**
+   * 落一个新计划。
+   * 旧计划被标为 `superseded`（而不是直接删）—— 客户端可能还拿着旧 planId 点「开始执行」，
+   * 那时 `approvePlan()` 能明确回「计划已更新」，而不是静默批准一个新计划。
+   */
+  recordPlan(session: AgentSession, plan: AgentPlan): void {
+    if (session.plan && session.plan.id !== plan.id) session.plan.status = 'superseded'
+    session.plan = plan
+    this.touch(session)
+  }
+
+  /** 覆盖计划（进度更新用；不标记 superseded） */
+  updatePlan(session: AgentSession, plan: AgentPlan | undefined): void {
+    if (!plan) return
+    session.plan = plan
+    this.touch(session)
+  }
+
+  /**
+   * 用**修订后**的计划原地替换当前计划（`revise_plan`）。
+   *
+   * 与 `recordPlan()` 的关键区别：**不标 `superseded`、不改 `id`** —— 修订的语义是"改这一份计划"，
+   * 所以卡片延续、旧 `planId` 依然有效（用户改完能直接用同一张卡点「开始执行」）。
+   *
+   * 批准状态必须重新对齐：修订前已批准的计划，内容已不再是用户批准过的那一份，
+   * 于是回到 `proposed` 并**清空 `approvedAt`** —— plan 门禁（`hooks.beforeTool`）判的就是
+   * `approvedAt`，不清会出现"计划改了、门禁还开着"的安全漏洞。
+   *
+   * 返回 `'stale'` 表示客户端拿的 planId 与会话当前计划不一致（过期卡片）：
+   * 调用方据此提示用户重新提交，而不是把修订合并进一份陌生的计划。
+   */
+  revisePlan(session: AgentSession, planId: string, revised: AgentPlan): 'revised' | 'stale' | 'none' {
+    const current = session.plan
+    if (!current) return 'none'
+    if (current.id !== planId) return 'stale'
+    const wasApproved = current.approvedAt != null
+    session.plan = {
+      ...revised,
+      id: current.id,
+      // 前面已批准的步骤状态由 revised.steps 带走（mergePlanRevision 保证），这里只对齐批准状态
+      ...(wasApproved ? { status: 'proposed' as const } : {}),
+    }
+    if (wasApproved) delete session.plan.approvedAt
+    this.touch(session)
+    return 'revised'
+  }
+
+  // ---- 计划修改意图（本轮，`chat.send.revisePlanId`）----
+
+  /**
+   * 记录本轮的修改计划意图。
+   * prompt 构建与 `hooks.beforeTool` 都要在**模型调用工具之前**读到它，所以不能只存在工具入参里。
+   */
+  setPlanTurn(session: AgentSession, turn: PlanTurn | undefined): void {
+    if (turn) session.planTurn = turn
+    else delete session.planTurn
+    this.touch(session)
+  }
+
+  /**
+   * 用户确认计划。返回 `'stale'` 表示客户端拿的 planId 与会话当前计划不一致
+   * （期间重新规划过：`recordPlan()` 会把旧计划标成 `superseded`）——
+   * 调用方据此提示用户重新确认，而不是错误地批准一个新计划。
+   */
+  approvePlan(session: AgentSession, planId: string): 'approved' | 'stale' | 'none' {
+    const plan = session.plan
+    if (!plan) return 'none'
+    if (plan.id !== planId) return 'stale'
+    plan.status = 'approved'
+    plan.approvedAt = Date.now()
+    this.touch(session)
+    return 'approved'
+  }
+
+  // ---- 提问（clarifying questions）----
+
+  /** 落一个待回答问题（覆盖上一次未回答的：一次只问一个问题） */
+  recordQuestion(session: AgentSession, question: PendingQuestion): void {
+    session.pendingQuestion = question
+    this.touch(session)
+  }
+
+  /**
+   * 标记问题已回答。
+   * - 带 `questionId` 时要求匹配当前问题，不匹配则返回 `false`（客户端拿的是旧问题）；
+   * - 不带 `questionId` 时（用户直接打字）视为回答当前未回答的问题。
+   */
+  answerQuestion(session: AgentSession, answer: string, questionId?: string): boolean {
+    const question = session.pendingQuestion
+    if (!question || question.answeredAt) return false
+    if (questionId && question.id !== questionId) return false
+    question.answer = answer
+    question.answeredAt = Date.now()
+    this.touch(session)
+    return true
   }
 
   onModuleDestroy(): void {
