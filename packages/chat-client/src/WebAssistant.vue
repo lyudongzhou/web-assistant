@@ -36,6 +36,7 @@
         :messages="messages"
         :loading="loading"
         :placeholder="placeholder"
+        :markdown="markdown"
         :activities="activities"
         :trace-duration-ms="traceSummary.durationMs"
         :plan="plan"
@@ -125,6 +126,9 @@ const props = withDefaults(defineProps<WebAssistantProps>(), {
   title: 'Web Assistant',
   subtitle: '',
   placeholder: '描述你想打开的页面…',
+  // ★ 与 `welcome` 同一个坑：Boolean prop 不给默认值 ⇒ 缺省被转成 `false`，
+  //   「不传」会被当成「宿主关掉了 Markdown」（气泡退回纯文本）。
+  markdown: true,
   showBackButton: true,
   showActivityLog: false,
   debug: false,

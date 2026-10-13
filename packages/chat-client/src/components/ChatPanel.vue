@@ -14,9 +14,14 @@
         <p class="hint">描述你想打开的页面，例如：<br />「我想看用户列表」「打开数据看板」</p>
       </div>
 
-      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`） -->
+      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`）。
+           正文按 Markdown 渲染（与宿主直连面同一口径，见 <MarkdownText> / lib/markdown.ts）；
+           用户自己的话保持纯文本。 -->
       <div v-for="(m, i) in bubbles" :key="i" class="message" :class="m.role">
-        <div class="bubble">{{ m.content }}</div>
+        <div class="bubble" :class="{ md: isMarkdown(m) }">
+          <MarkdownText v-if="isMarkdown(m)" :text="m.content" />
+          <template v-else>{{ m.content }}</template>
+        </div>
       </div>
     </div>
 
@@ -70,6 +75,7 @@ import TraceTimeline from './TraceTimeline.vue'
 import PlanCardView from './PlanCard.vue'
 import AskCardView from './AskCard.vue'
 import ModeSwitch from './ModeSwitch.vue'
+import MarkdownText from './MarkdownText.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -77,6 +83,12 @@ const props = withDefaults(
     messages?: ChatMessage[]
     loading?: boolean
     placeholder?: string
+    /**
+     * 是否用 Markdown 渲染 assistant 的结果气泡（缺省 `true`）。
+     * 与宿主直连面（`HostAssistantChat`）同一口径：只作用于**结果气泡**，
+     * 用户自己的话 / 过程区 / 计划卡 / 问题卡一律纯文本。
+     */
+    markdown?: boolean
     /** 是否渲染「过程区」，缺省渲染 */
     showTrace?: boolean
     /** 过程区里本轮耗时（`chat.done.durationMs`） */
@@ -96,6 +108,7 @@ const props = withDefaults(
     messages: () => [],
     loading: false,
     placeholder: '描述你想打开的页面…',
+    markdown: true,
     showTrace: true,
     traceDurationMs: undefined,
     activities: () => [],
@@ -110,6 +123,11 @@ const props = withDefaults(
 const split = computed(() => splitMessages(props.messages))
 const bubbles = computed(() => split.value.bubbles)
 const trace = computed(() => split.value.trace)
+
+/** 这条气泡走不走 Markdown（只认 assistant 的结果气泡；口径与宿主直连面一致） */
+function isMarkdown(m: ChatMessage): boolean {
+  return props.markdown && m.role === 'assistant'
+}
 
 const emit = defineEmits<{
   (event: 'send', text: string): void
@@ -228,6 +246,11 @@ watch(
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* Markdown 气泡：块级元素自己排版（`pre-wrap` 会把换行变成硬换行、把列表与代码块揉烂）。
+   单换行的观感由渲染层的 `breaks: true` 保住（见 lib/markdown.ts）。 */
+.bubble.md {
+  white-space: normal;
 }
 .message.user .bubble {
   background: var(--wa-primary, #3b82f6);

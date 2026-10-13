@@ -122,6 +122,17 @@ export interface WebAssistantProps {
   title?: string
   subtitle?: string
   placeholder?: string
+  /**
+   * 是否用 Markdown 渲染 assistant 的**结果气泡**（缺省 `true`）。
+   *
+   * 为什么默认开：结果气泡的正文事实上就是 Markdown（模型自由输出 + 服务端欢迎语的
+   * `- 列表`），而协议里 `chat.text` 没有格式字段 ⇒ 客户端按「宽松解析」处理，
+   * 并用 `breaks: true` 保住纯文本观感（单换行仍是 `<br>`）。判据与取舍见 `lib/markdown.ts`。
+   *
+   * 关掉即为上 md 之前的行为：`{{ content }}` + `white-space: pre-wrap`。
+   * 用户自己的话、过程区、计划卡 / 问题卡**始终**纯文本。
+   */
+  markdown?: boolean
   showBackButton?: boolean
   /**
    * runtime 就绪回调（init 之后触发一次）。runtime 是**框架无关 API**，宿主可据此反向推数据：
@@ -225,6 +236,10 @@ export interface WebAssistantThemeVars {
   '--wa-text-muted'?: string
   /** assistant 气泡背景（默认 #f3f4f6） */
   '--wa-assistant-bubble-bg'?: string
+  /** 行内代码 / 代码块背景（默认 rgba(17,24,39,.06)）——结果气泡的 Markdown 渲染用 */
+  '--wa-code-bg'?: string
+  /** 行内代码文字色（默认跟随正文色） */
+  '--wa-code-text'?: string
   /** 过程区背景（默认跟随 --wa-bg） */
   '--wa-trace-bg'?: string
   /** 过程区正文色（默认跟随 --wa-text-secondary） */
@@ -300,6 +315,12 @@ export interface HostAssistantDockProps {
   openLabel?: string
   /** 输入框占位 */
   placeholder?: string
+  /**
+   * 是否用 Markdown 渲染 assistant 的**结果气泡**（缺省 `true`）。
+   * 判据与取舍见 `lib/markdown.ts`；关掉即为上 md 之前的行为（纯文本 + `pre-wrap`）。
+   * 用户自己的话、过程区、计划卡 / 问题卡**始终**纯文本。
+   */
+  markdown?: boolean
   /** 空态建议（点一下即发送）；`[]` = 不显示建议区 */
   suggestions?: string[]
   /** 空态标题 / 说明 */

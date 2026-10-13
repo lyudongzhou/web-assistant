@@ -7,6 +7,7 @@ import HostAssistantDock from './components/HostAssistantDock.vue'
 import HostAssistantChat from './components/HostAssistantChat.vue'
 import HostAssistantActivities from './components/HostAssistantActivities.vue'
 import TraceTimeline from './components/TraceTimeline.vue'
+import MarkdownText from './components/MarkdownText.vue'
 import PanelSection from './components/PanelSection.vue'
 import PlanCardView from './components/PlanCard.vue'
 import AskCardView from './components/AskCard.vue'
@@ -20,10 +21,15 @@ export { WelcomePage }
 //   HostAssistantChat        对话区（数据进 / 事件出，可塞进宿主自己的布局）
 //   TraceTimeline            过程区（agent 步骤 + 思考 + runtime 活动合并去重）
 //   HostAssistantActivities  纯 runtime 活动折叠条（带「清空」）
+//   MarkdownText             结果气泡的 Markdown 渲染（只吃 text，不认 socket / runtime）
 //   PlanCard / AskCard / ModeSwitch  回合边界的交互件（计划确认 / 澄清提问 / 模式切换），
 //                                    自写 UI 可单独复用（状态迁移规则在 lib/turnState.ts）
 export { HostAssistantDock, HostAssistantChat, HostAssistantActivities, TraceTimeline }
 export { PlanCardView, AskCardView, ModeSwitch }
+// 结果气泡的 Markdown 渲染（数据进、无事件）：自写气泡时用它就能与内置两条渲染面同一份口径
+// （安全约束与「宽松解析 + breaks」的取舍都在 lib/markdown.ts 里）
+export { MarkdownText }
+export { getMarkdownRenderer, renderMarkdown } from './lib/markdown.js'
 // 可折叠面板（过程区与计划卡共用的壳：分隔线 / 折叠头 / 状态行 / footer 槽）——
 // 自写 panel 时用它就能和内置的两处保持同一套样式与收缩行为（状态配 usePanelOpen）
 export { PanelSection }

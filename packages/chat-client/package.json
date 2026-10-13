@@ -24,6 +24,7 @@
     "test": "node --import tsx --test test/*.test.mjs",
     "test:render": "node test/render-split.mjs",
     "test:render:panel": "node test/render-panel.mjs",
+    "test:render:markdown": "node test/render-markdown.mjs",
     "prepublishOnly": "pnpm build:lib"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
     "@webassistant/wc-runtime-core": "workspace:^",
     "@webassistant/wc-runtime-vue": "workspace:^",
     "gsap": "^3.15.0",
+    "markdown-it": "^15.0.2",
     "motion-v": "^1.10.3"
   },
   "peerDependencies": {

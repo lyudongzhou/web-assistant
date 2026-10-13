@@ -35,6 +35,7 @@
         :messages="messages"
         :loading="loading"
         :placeholder="placeholder"
+        :markdown="markdown"
         :suggestions="suggestList"
         :hello-title="helloTitle"
         :hello-hint="helloHint"
@@ -92,6 +93,7 @@ const props = withDefaults(defineProps<HostAssistantDockProps>(), {
   defaultOpen: true,
   openLabel: '打开助手',
   placeholder: '描述你想做什么…',
+  markdown: true,
   suggestions: undefined,
   showStatusLine: true,
   showActivities: true,

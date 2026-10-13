@@ -20,5 +20,9 @@ Commons Clause 限制的是「把本组件本身作为商品出售 / 提供其�
 
 | 包 | 许可 | 用途 |
 | --- | --- | --- |
+| `markdown-it` | MIT | 结果气泡的 Markdown 渲染（`lib/markdown.ts`：`html:false` + `breaks:true`，raw HTML 一律转义；图片不产出 `<img>`） |
 | `motion-v` | MIT | `BlurText` / `GradientText` / `TiltedCard` 的动画 |
 | `gsap`（含 `InertiaPlugin`） | GreenSock 标准「免版税」许可 | `DotGrid` 的惯性物理动画 |
+
+> `markdown-it` 及其传递依赖会被打进本库的预构建产物（`dist/index.js`），宿主无需单独安装；
+> 本包只用到它的解析与渲染 API，未做源码级的改写。

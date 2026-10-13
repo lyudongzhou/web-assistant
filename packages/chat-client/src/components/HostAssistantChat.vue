@@ -23,9 +23,15 @@
         </slot>
       </div>
 
-      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`），过程行不再混进来 -->
+      <!-- 结果气泡：只渲染结果（`kind` 缺省 / `'message'`），过程行不再混进来。
+           正文按 Markdown 渲染（见 <MarkdownText>）：模型的答复事实上就是 Markdown，
+           以前一律 pre-wrap ⇒ 用户看到字面的 `**加粗**` 与 `- 列表`。
+           用户自己的话保持纯文本（那是他的原话；而且蓝底气泡上 md 的配色会打架）。 -->
       <div v-for="(message, index) in bubbles" :key="index" class="message" :class="message.role">
-        <div class="bubble">{{ message.content }}</div>
+        <div class="bubble" :class="{ md: isMarkdown(message) }">
+          <MarkdownText v-if="isMarkdown(message)" :text="message.content" />
+          <template v-else>{{ message.content }}</template>
+        </div>
       </div>
     </div>
 
@@ -86,6 +92,7 @@ import TraceTimeline from './TraceTimeline.vue'
 import PlanCardView from './PlanCard.vue'
 import AskCardView from './AskCard.vue'
 import ModeSwitch from './ModeSwitch.vue'
+import MarkdownText from './MarkdownText.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -96,6 +103,12 @@ const props = withDefaults(
     messages?: ChatMessage[]
     loading?: boolean
     placeholder?: string
+    /**
+     * 是否用 Markdown 渲染 assistant 的结果气泡（缺省 `true`）。
+     * 只作用于**结果气泡**：用户自己的话、过程区、计划卡 / 问题卡一律纯文本。
+     * 关掉即为「上 md 之前」的行为（`{{ content }}` + `white-space: pre-wrap`）。
+     */
+    markdown?: boolean
     /** 空态建议（点一下即发送）；`[]` = 不显示建议区 */
     suggestions?: string[]
     /** 空态标题（缺省内置一句通用文案） */
@@ -125,6 +138,7 @@ const props = withDefaults(
     messages: () => [],
     loading: false,
     placeholder: '描述你想做什么…',
+    markdown: true,
     suggestions: () => [],
     helloTitle: '让助手替你操作这个系统',
     helloHint: '页面在它自己的位置打开；助手只做「打开 / 筛选 / 预填」这类操作，提交永远由你点。',
@@ -170,6 +184,16 @@ function onAnswer(text: string, questionId: string): void {
 const split = computed(() => splitMessages(props.messages))
 const bubbles = computed(() => split.value.bubbles)
 const trace = computed(() => split.value.trace)
+
+/**
+ * 这条气泡走不走 Markdown。
+ *
+ * 只认 **assistant 的结果气泡**：用户的话是他的原话（且蓝底配色下 md 只会更乱），
+ * 过程区 / 计划卡 / 问题卡各有自己的排版口径（见 types.ts 的 ChatMessageKind）。
+ */
+function isMarkdown(message: ChatMessage): boolean {
+  return props.markdown && message.role === 'assistant'
+}
 
 const text = ref('')
 const scrollEl = useTemplateRef<HTMLElement>('scrollEl')
@@ -279,6 +303,11 @@ watch(
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* Markdown 气泡：块级元素要自己排版，`pre-wrap` 会把每个换行都变成硬换行、把列表/代码块揉烂。
+   单换行的观感由渲染层的 `breaks: true` 保住（见 lib/markdown.ts），不靠这里。 */
+.bubble.md {
+  white-space: normal;
 }
 .message.user .bubble {
   background: var(--wa-primary, #3b82f6);

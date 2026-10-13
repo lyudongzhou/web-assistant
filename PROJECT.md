@@ -132,11 +132,13 @@ webassistant/
             ├── WebAssistant.vue  # 主组件：只做布局与接线（渲染区无页面时展示欢迎页，可被宿主覆盖）
             ├── components/ChatPanel.vue
             ├── components/WelcomePage.vue # 内置欢迎页（默认呈现组件）：text + 能力卡片（#welcome 插槽 / welcome prop 可覆盖）
+            ├── components/MarkdownText.vue # 结果气泡的 Markdown 呈现（v-html + :deep 样式；只吃 text）
             ├── composables/
             │   ├── useRuntimeHost.ts # ★ createHostRuntime + 生命周期，包成响应式状态（view.tag → hasPage/currentTag）
             │   ├── useAgentChat.ts   # ★ 对话状态机（流式拼接 + render 回调 + 欢迎载荷/握手就绪）
             │   └── useWelcomePage.ts # ★ 欢迎页状态机（空态判定 / 文案 / 能力清单 / 加载态）
             ├── lib/welcome.ts    # 欢迎页纯逻辑（零依赖、可单测）：默认文案 + variant/loading/合并
+            ├── lib/markdown.ts   # 气泡 Markdown 渲染纯逻辑（markdown-it 单例 + 安全约束；只作用于结果气泡）
             ├── lib/initialPage.ts# 首屏是否自动打开页面的归一化（缺省不打开 → 先出欢迎页）
             ├── lib/agentSocket.ts# 类型化 WS 客户端（session / 重连退避 / 心跳 / RPC）
             └── types.ts          # Props / Emits / ChatMessage / 欢迎页类型 / 主题变量
@@ -390,6 +392,46 @@ ctx.t('key'); ctx.state.user; ctx.nav.push({ tag })
   不会触发，宿主级欢迎页不走它。
 - 客户端 `useAgentChat` 在 `chat.done`/`chat.error` 后重置流式游标，使 server 主动推送的消息另起一条气泡
   （游标**按通道各持一个**：结果 `chat.text{channel:'text'}` 与思考 `{channel:'reasoning'}` 不会互相串行）。
+
+### 6.7.4 结果气泡的 Markdown 渲染（chat-client）
+
+**问题**：结果气泡的正文事实上就是 Markdown（模型的自由文本 + 服务端欢迎语里的 `- 列表`），
+而在此之前一律按 `{{ content }}` + `white-space: pre-wrap` 显示 —— 用户看到的是**字面的**
+`**加粗**`、`- 列表`、围栏代码，长答复（多步汇总 / 对比 / 代码片段）可读性差。
+
+**分层**（与 `lib/welcome.ts` 同款：纯逻辑可单测 + 呈现组件薄）：
+
+| 层 | 位置 | 职责 |
+| --- | --- | --- |
+| 纯逻辑 | `chat-client/lib/markdown.ts` | `markdown-it` **单例** + 三条安全约束；导出 `renderMarkdown(text)` / `getMarkdownRenderer()` |
+| 呈现 | `chat-client/components/MarkdownText.vue` | `computed(() => renderMarkdown(text))` → `v-html`；Markdown 元素样式全走 `:deep(...)`（scoped 作用不到 `v-html` 节点）+ `--wa-*` token |
+| 接线 | `ChatPanel` / `HostAssistantChat` | assistant 结果气泡走 `<MarkdownText>`；**用户气泡保持纯文本**；`markdown?: boolean`（缺省 true）由 `WebAssistant` / `HostAssistantDock` 透传 |
+
+**为什么"一律按 Markdown 宽松解析"而不是给协议加格式位**：`chat.text` 只有 `delta` + `channel`，
+没有 `format` 字段 ⇒ 客户端无法知道某一段是不是 Markdown。两个候选分别是「加协议字段」与
+「客户端一律宽松解析」。选了后者，依据是：
+
+- 事实来源查过 —— prompt 里**没有任何**输出格式要求（`manifest.service.ts` 全文 + 项目规则里
+  `markdown/格式/排版` 零命中），所以「模型会写 Markdown」是**无保证但事实上成立**；协议加字段
+  只能标出「模型那条是 md」，收益仅是"更确定"，却要同时改 protocol + agent-server + chat-client 三个包。
+- 服务端写死的那批文案（欢迎语 / 交接指引 / 进度交接 / 预算暂停）是纯中文，里面**没有**会被
+  误判成结构的字符；欢迎语的 `- 页面名（例如：…）` 本来就是个列表。配上 `breaks: true`
+  （单换行 = `<br>`）后，纯文本与 Markdown 的渲染结果**视觉等价**。
+
+**安全约束**（agent 文本 = 模型输出，可能夹带页面数据 ⇒ 视为不可信输入；因此不需要额外的 sanitizer）：
+`html: false`（raw HTML 一律转义）、`linkify: false`、markdown-it 内置 `validateLink` 在**解析期**拒掉
+`javascript:` / `vbscript:` / `file:`（那段退化成字面文本）、**图片不产出 `<img>`**（只给「绝对 http(s)」
+的链接 + alt 文案 —— 否则 `![](https://third-party/?x=…)` 会把"谁在什么时候看"直接发给第三方）。
+外链一律 `target="_blank" rel="noopener noreferrer"`；围栏代码块右上角挂语言标签，且只接受
+`[\w+#.-]{1,20}` 的 info 串（模型的任意文本进不了 DOM）。
+
+**已知取舍**：`2 * 3 * 4` 这类文本可能被判成斜体（Markdown 的固有代价）；流式期间半截 Markdown
+会有一次轻微跳动（ChatGPT / Claude 同款行为）；不做语法高亮（避免再引 shiki/prism），
+代码块"复制"按钮留作后续。
+
+**验收**：`chat-client/test/markdown.test.mjs`（22 例：结构 / `breaks` 不回归 / 流式中途未闭合围栏 /
+raw HTML 与危险协议 / 表格与嵌套列表 / 规模护栏）+ `test/render-markdown.mjs`（13 例，读 dist 的 SSR
+结构验收：assistant 成了元素、用户气泡与 `markdown:false` 仍是纯文本、思考块不受影响）。
 
 ### 6.8.1 wcManifestPlugin：可选的 manifest 增量集成（vite-plugin-wc）
 
