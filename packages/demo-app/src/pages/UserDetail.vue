@@ -54,6 +54,7 @@
 //   ② 声明 props：agent 可直接传 id
 //   ③ 直传 props 旁路：agent 传**对象**时只能走 useRuntimeServices().pageProps
 //      （真实 router 承载不了对象，见 PROJECT.md 6.9 的能力对照表）
+// 三条通道的**取值优先级**见下方 resolvedId —— 与 prop 声明处的口径一致：agent 直传 > 路由参数。
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { tryUseRuntimeServices } from '@webassistant/wc-runtime-vue'
@@ -100,8 +101,18 @@ const form = reactive<Partial<User>>({
   lastLoginAt: '',
 })
 
+/**
+ * 当前要展示的用户 id（三通道合一，优先级：agent 直传 > 路由参数）：
+ *   - container：props.id 就是 core `resolveProps` 的产物（已含「直传 > 路径参数」），落成元素 property
+ *   - host：`<RouterView />` 不绑 props、路由记录也没 `props: true` → **props.id 恒为声明的默认值 ''**；
+ *     导航解析结果由 runtime 写进 pageProps 旁路，所以这里必须能回退到 pageProps / route.params
+ *
+ * ⚠️ 不能用 `??` 串这条链：`??` 只跳过 null / undefined，而 props.id 的 default 是 `''`，
+ *   空串会**截断整条回退链**（route.params.id 与 pageProps.id 永远读不到）→ host 模式恒报「缺少用户 id」。
+ *   同理这里用 `||`（空串视同「没给」）—— 与 OrderList.vue 的 `props.userId || direct.userId` 同款写法。
+ */
 const resolvedId = computed<string>(() => {
-  const raw = props.id ?? route.params.id ?? pageProps.value.id
+  const raw = props.id || pageProps.value.id || route.params.id
   if (raw === '' || raw === undefined || raw === null) return ''
   return String(raw)
 })
