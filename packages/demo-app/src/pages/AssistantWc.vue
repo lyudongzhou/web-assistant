@@ -12,6 +12,7 @@
 // 与用法 B 完全一致 —— 用来对照「同一页面在两条用法下的差异」（样式隔离、store 镜像、emit 捕获）。
 import { WebAssistant } from "@webassistant/chat-client";
 import { hostServices } from "../utils/hostServices";
+import { wsBase } from "../utils/wsBase";
 
 // `?wa-debug` 可打开 debug（把 runtime 挂到 __waRuntime）
 const debug = new URLSearchParams(window.location.search).has("wa-debug");
@@ -34,7 +35,7 @@ const services = hostServices();
     </p>
     <div class="panel-slot">
       <WebAssistant
-        ws-base="/ws"
+        :ws-base="wsBase"
         :services="services"
         title="WebAssistant（容器 / WC 模式）"
         subtitle="页面在面板内渲染 —— 与宿主直连模式共用同一套 agent API 与清单"

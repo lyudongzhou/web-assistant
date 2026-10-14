@@ -5,6 +5,7 @@
   <HostAssistantDock
     :create-runtime="createRuntime"
     :services="services"
+    :ws-base="wsBase"
     title="WebAssistant"
     badge="用法 B · 宿主直连"
     placeholder="试试：打开用户列表，找一下李四"
@@ -33,6 +34,7 @@ import type { Runtime } from '@webassistant/wc-runtime-vue/host'
 import { useAuthStore } from '../stores/authStore'
 import { useAppStore } from '../stores/appStore'
 import { hostServices } from '../utils/hostServices'
+import { wsBase } from '../utils/wsBase'
 import { attachRuntimeToStoreBridge } from '../utils/hostStoreBridge'
 
 const router = useRouter()
