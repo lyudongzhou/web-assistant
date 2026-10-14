@@ -8,6 +8,7 @@
     "dev:host": "pnpm --filter demo-app dev",
     "build:libs": "pnpm --filter @webassistant/protocol build && pnpm --filter @webassistant/wc-runtime-core build && pnpm --filter @webassistant/wc-runtime-vue build && pnpm --filter @webassistant/analyzer build && pnpm --filter @webassistant/vite-plugin-wc build && pnpm --filter @webassistant/chat-client build:lib",
     "build:ce": "pnpm build:libs && pnpm --filter demo-app build:ce",
+    "build:demo": "pnpm build:libs && pnpm --filter demo-app analyze && pnpm --filter demo-app build:ce && pnpm --filter demo-app build",
     "analyze": "pnpm --filter @webassistant/analyzer build && pnpm --filter demo-app analyze",
     "preview:ce": "pnpm --filter demo-app preview:ce",
     "test": "pnpm --filter @webassistant/wc-runtime-core test && pnpm --filter @webassistant/wc-runtime-vue test && pnpm --filter @webassistant/chat-client test && pnpm --filter @webassistant/analyzer test && pnpm --filter agent-server test && pnpm --filter demo-app test",
