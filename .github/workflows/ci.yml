@@ -1,0 +1,45 @@
+# PR / main 上的校验流水线：装依赖 → 构建库 → 类型检查 → 单测。
+#
+# 为什么必须 build:libs（不能省）：
+#   多个包的 typecheck / test 依赖上游包的 dist —— 例如 demo-app 的 vue-tsc 要解析
+#   @webassistant/chat-client 的 dist/index.d.ts，而 @webassistant/protocol 的 dist 是
+#   wc-runtime-core 的构建前提。
+# 全部单测均无网络依赖（不读 DEEPSEEK key），无需注入任何 secret。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build libs
+        run: pnpm build:libs
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
