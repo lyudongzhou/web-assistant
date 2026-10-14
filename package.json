@@ -10,7 +10,7 @@
     "build:ce": "pnpm build:libs && pnpm --filter demo-app build:ce",
     "analyze": "pnpm --filter @webassistant/analyzer build && pnpm --filter demo-app analyze",
     "preview:ce": "pnpm --filter demo-app preview:ce",
-    "test": "pnpm --filter @webassistant/wc-runtime-core test && pnpm --filter @webassistant/wc-runtime-vue test && pnpm --filter @webassistant/chat-client test && pnpm --filter @webassistant/analyzer test && pnpm --filter agent-server test",
+    "test": "pnpm --filter @webassistant/wc-runtime-core test && pnpm --filter @webassistant/wc-runtime-vue test && pnpm --filter @webassistant/chat-client test && pnpm --filter @webassistant/analyzer test && pnpm --filter agent-server test && pnpm --filter demo-app test",
     "typecheck": "pnpm -r typecheck",
     "dev:agent": "pnpm --filter agent-server dev",
     "changeset": "changeset",

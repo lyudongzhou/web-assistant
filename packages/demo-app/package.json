@@ -12,6 +12,7 @@
     "build:ce:watch": "vite build --config vite.ce.config.ts --watch",
     "analyze": "mkdir -p public/wc && wc-analyze --config wc.pages.json --out public/wc/manifest.json",
     "preview:ce": "node serve.mjs",
+    "test": "node --test test/*.test.mjs",
     "typecheck": "vue-tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
