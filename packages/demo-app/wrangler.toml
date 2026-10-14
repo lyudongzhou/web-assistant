@@ -1,0 +1,19 @@
+# Cloudflare Pages 项目配置（wrangler）。
+#
+# 位置：必须与 `functions/`（Pages Functions）同级 —— 即本包根，而不是静态产物 `dist/` 里。
+#
+# 用法：
+#   本地起「静态 + Functions」（先 pnpm build:demo 产出 dist/）：
+#     npx wrangler pages dev dist
+#   部署（CI 里由 .github/workflows/deploy-demo-app.yml 调）：
+#     npx wrangler pages deploy dist
+#
+# ⚠️ 首次需先建项目（或首次 deploy 时自动创建）：
+#     npx wrangler pages project create web-assistant --production-branch=main
+#   `name` 就是 Pages 项目名；pages.dev 子域全球唯一，若被占用改成别的即可。
+
+name = "web-assistant"
+# Functions 运行时的兼容日期；可按需上调（不能晚于当天）。用不到 Node 内置模块，无需 nodejs_compat
+compatibility_date = "2026-01-01"
+# 静态产物目录（相对本文件）—— 给 pages dev / pages deploy 省去每次传参
+pages_build_output_dir = "dist"

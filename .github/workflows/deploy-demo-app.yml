@@ -1,0 +1,57 @@
+# 发布 demo-app 静态站点（含 /api 的 Cloudflare Pages Function）到 Cloudflare Pages。
+#
+# 前置（一次性，详见 docs/DEPLOY.md）：
+#   1) 建 Pages 项目：npx wrangler pages project create web-assistant --production-branch=main
+#   2) 仓库 Secret：CLOUDFLARE_API_TOKEN、CLOUDFLARE_ACCOUNT_ID（可选 DEEPSEEK_API_KEY → analyze 的 AI 关键词）
+#   3) 仓库 Variable：VITE_WS_BASE = wss://<agent-server 域名>/ws（生产里 WS 与静态不同域）
+name: Deploy demo-app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/deploy-demo-app.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-demo-app
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build（libs → analyze → build:ce → build）
+        run: pnpm build:demo
+        env:
+          # analyze 的 AI 语义分析（可选；未配置会自动回退静态解析，功能不受影响）
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          # 生产里的 agent-server WS 地址（绝对地址）。未配置会回退成 '/ws' ——
+          # Pages 上没有 /ws 后端，面板会连不上。
+          VITE_WS_BASE: ${{ vars.VITE_WS_BASE }}
+
+      # 用官方文档的 Direct Upload 形式（显式目录 + 项目名），不走 wrangler-action：
+      # 该 action 会按 lockfile 猜包管理器，在 pnpm 单仓的子目录里容易出岔子；npx 更透明。
+      # 项目名需与 packages/demo-app/wrangler.toml 的 name 一致。
+      - name: Publish to Cloudflare Pages
+        working-directory: packages/demo-app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 pages deploy dist --project-name=web-assistant

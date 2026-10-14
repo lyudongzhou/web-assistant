@@ -9,3 +9,4 @@ dist-ce/
 agent-server-amd64.tar.gz
 .analyze-cache.json
 .wc-manifest-cache.json
+.wrangler/

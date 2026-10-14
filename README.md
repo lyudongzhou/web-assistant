@@ -53,6 +53,19 @@ pnpm dev:agent -- --manifest ../demo-app/public/wc/manifest.json          # 本�
 pnpm preview:ce      # → http://localhost:8080/ （= wc-demo.html）
 ```
 
+## 部署（公开 demo：Cloudflare Pages + Render）
+
+```
+浏览器 ──► Cloudflare Pages（静态 dist/ + /api 的 Pages Function，同源）
+       ──► wss://<agent-server 域名>/ws      ← 跨域，构建期由 VITE_WS_BASE 注入
+Render ─► agent-server（GHCR 镜像 · Docker · WebSocket）
+            MANIFEST_URL = https://<pages 域名>/wc/manifest.json
+```
+
+一条命令产出可部署的静态包：`pnpm build:demo` → `packages/demo-app/dist/`。
+推送到 `main` 后由 GitHub Actions 自动发布（`.github/workflows/`）。
+账号、密钥、一次性设置与排错见 [docs/DEPLOY.md](./docs/DEPLOY.md)。
+
 ## 核心机制（一页版）
 
 1. **一个 framework 批次 = 一次构建**：容器（`containers/vue.js`）与页面（`pages/*.js`）必须同批构建，

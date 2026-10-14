@@ -1,0 +1,68 @@
+# 构建 agent-server 的 linux/amd64 镜像 → 推 GitHub Container Registry → 触发 Render 重新部署。
+#
+# 前置（一次性，详见 docs/DEPLOY.md）：
+#   1) Render 建 Web Service（Existing Image）：ghcr.io/<owner>/<repo>/agent-server:latest
+#      环境变量：DEEPSEEK_API_KEY、MANIFEST_URL=https://<pages 域名>/wc/manifest.json
+#   2) 首次 push 后把 GHCR 该包设为 Public（否则 Render 拉取需要凭据）
+#   3) 仓库 Secret：RENDER_DEPLOY_HOOK_URL（Render 服务 → Settings → Deploy Hook）
+name: Deploy agent-server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/agent-server/**'
+      - 'packages/protocol/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/deploy-agent-server.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-agent-server
+  cancel-in-progress: true
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/agent-server/Dockerfile
+          # Render 要求镜像为 linux/amd64
+          platforms: linux/amd64
+          # 默认私有 registry 在 CI 不可达，覆盖成公共源（@cline/sdk 是公开包）
+          build-args: |
+            NPM_REGISTRY=https://registry.npmjs.org/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/agent-server:latest
+            ghcr.io/${{ github.repository }}/agent-server:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trigger Render deploy
+        # 镜像服务不会因「新镜像推送」自动重部署，必须显式触发 Deploy Hook
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then
+            curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL"
+            echo "已触发 Render 部署"
+          else
+            echo "跳过：未配置 RENDER_DEPLOY_HOOK_URL（可在 Render 面板手动 Deploy）"
+          fi
